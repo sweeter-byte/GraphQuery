@@ -1,6 +1,11 @@
 build/
 test.cc
 
+# Python cache
+__pycache__/
+*.pyc
+.pytest_cache/
+
 # Compiled pybind11 modules
 *.so
 
