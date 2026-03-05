@@ -6,3 +6,12 @@ patents/
 wordnet/
 youtube/
 .DS_Store
+*.png
+
+# latex
+*.aux
+*.log
+*.out
+*.toc
+*.synctex.gz
+*.pdf
