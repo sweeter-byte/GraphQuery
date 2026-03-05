@@ -1,14 +1,36 @@
+# C++ build
 build/
 test.cc
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+*.egg-info/
+.venv/
+venv/
+
+# Compiled pybind11 modules
+*.so
+
+# Binary index artifacts
+dataset/*/index/
 dblp/
 human/
 patents/
 wordnet/
 youtube/
-.DS_Store
-*.png
 
-# latex
+# Frontend
+frontend/node_modules/
+frontend/dist/
+
+# OS
+.DS_Store
+
+# Media / docs build
+*.png
 *.aux
 *.log
 *.out

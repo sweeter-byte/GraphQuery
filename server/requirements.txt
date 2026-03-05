@@ -1,0 +1,8 @@
+# FastAPI backend
+fastapi>=0.110.0
+uvicorn[standard]>=0.29.0
+pydantic>=2.6.0
+sse-starlette>=2.0.0
+
+# C++ bridge (optional — server runs in mock mode without it)
+pybind11>=2.11.0

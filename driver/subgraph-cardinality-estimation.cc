@@ -77,19 +77,21 @@ int32_t main(int argc, char *argv[]) {
     char flag = 'F';
     char group = 'F';
     char do_query = 'T';
+    bool build_index_mode = false;
+    string index_output_dir;
     for (int i = 1; i < argc; ++i) {
         if (argv[i][0] == '-') {
             // 处理短参数（单破折号）
-            if (argv[i][1] != '-') {  
+            if (argv[i][1] != '-') {
                 switch (argv[i][1]) {
                     case 'd': dataset = argv[++i]; break;
                     case 'q': query_path = argv[++i]; break;
                     case 'K': opt.ub_initial = atoi(argv[++i]); break;
                     case 'x': do_query = 'F'; break;
                 }
-            } 
+            }
             // 处理长参数（双破折号）
-            else {  
+            else {
                 const char* arg = argv[i] + 2;  // 跳过"--"
                 if (strcmp(arg, "threads") == 0) {
                     GraphLib::num_threads = atoi(argv[++i]);
@@ -101,6 +103,10 @@ int32_t main(int argc, char *argv[]) {
                     flag = 'T';
                 } else if (strcmp(arg, "STRUCTURE") == 0) {  // 保留原有逻辑
                     read_filter_option(string(argv[i]), string(argv[++i]), opt);
+                } else if (strcmp(arg, "build-index") == 0) {
+                    build_index_mode = true;
+                } else if (strcmp(arg, "index-dir") == 0) {
+                    index_output_dir = argv[++i];
                 } else {
                     cerr << "未知参数: " << argv[i] << endl;
                     exit(1);
@@ -135,6 +141,18 @@ int32_t main(int argc, char *argv[]) {
     opt.MAX_QUERY_VERTEX = 12;
     opt.MAX_QUERY_EDGE = 4;
     std::cout << "End Indexing ..." << std::endl;
+
+    // --build-index mode: serialize index and exit
+    if (build_index_mode) {
+        if (index_output_dir.empty()) {
+            index_output_dir = "../dataset/" + dataset + "/index";
+        }
+        std::cout << "Serializing index to: " << index_output_dir << std::endl;
+        D.SerializeIndex(index_output_dir);
+        std::cout << "Index built successfully." << std::endl;
+        return 0;
+    }
+
     if (do_query == 'F') return 0;
     for (size_t i = 0; i < query_names.size(); i++) {
         auto P = std::make_unique<PatternGraph>(); 
