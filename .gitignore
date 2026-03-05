@@ -1,5 +1,11 @@
 build/
 test.cc
+
+# Compiled pybind11 modules
+*.so
+
+# Binary index artifacts
+dataset/*/index/
 dblp/
 human/
 patents/

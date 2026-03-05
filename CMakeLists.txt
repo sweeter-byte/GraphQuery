@@ -16,6 +16,7 @@ find_package(Boost REQUIRED COMPONENTS system filesystem)
 find_package(GSL REQUIRED)
 find_package(TBB REQUIRED)
 
+# ===== Target 1: CLI executable =====
 file(GLOB_RECURSE SOURCES
     "driver/*.cc"
 )
@@ -36,3 +37,33 @@ target_link_libraries(Fastest
     pthread
     TBB::tbb
 )
+
+# ===== Target 2: Pybind11 module (fastest_core.so) =====
+find_package(pybind11 QUIET)
+if(pybind11_FOUND)
+    pybind11_add_module(fastest_core pybind/FastestPybind.cc)
+
+    target_include_directories(fastest_core PRIVATE
+        ${Boost_INCLUDE_DIRS}
+        ${GSL_INCLUDE_DIRS}
+        ${CMAKE_SOURCE_DIR}/lib
+    )
+
+    target_link_libraries(fastest_core
+        PRIVATE
+        OpenMP::OpenMP_CXX
+        ${Boost_LIBRARIES}
+        ${GSL_LIBRARIES}
+        pthread
+        TBB::tbb
+    )
+
+    # Install the .so next to the source for easy import
+    set_target_properties(fastest_core PROPERTIES
+        LIBRARY_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}"
+    )
+
+    message(STATUS "Pybind11 found: fastest_core module will be built")
+else()
+    message(STATUS "Pybind11 NOT found: fastest_core module will NOT be built. Install with: pip install pybind11")
+endif()
