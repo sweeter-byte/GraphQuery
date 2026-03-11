@@ -4,10 +4,19 @@ from __future__ import annotations
 import enum
 import time
 import uuid
-from typing import Any
+from typing import Any, Optional
 
 from pydantic import BaseModel, Field, field_validator
 
+
+# =============================================================================
+# Configuration Models
+# =============================================================================
+
+class ScheduleConfig(BaseModel):
+    mode: str = "auto"
+    python_threads: int = 4
+    omp_threads: int = 4
 
 # =============================================================================
 # Graph Models
@@ -122,6 +131,9 @@ class SessionCreateRequest(BaseModel):
     dataset_id: str
     query_graph: QueryGraph
     beam_width: int | None = None  # None = exact mode
+    schedule_config: Optional[ScheduleConfig] = None
+    run_execution: bool = False  # Run downstream matching engine after scoring
+    execution_config: Optional[dict] = None  # filter/order/engine/time_limit overrides
 
 
 class SessionCreateResponse(BaseModel):
@@ -140,6 +152,10 @@ class Session(BaseModel):
     orders: list[OrderState] = Field(default_factory=list)
     best_order_id: int | None = None
     best_score: float | None = None
+    schedule_config: Optional[ScheduleConfig] = None
+    run_execution: bool = False  # Whether to run downstream matching engine
+    execution_config: Optional[dict] = None  # Execution engine overrides
+    execution_result: Optional[dict] = None  # Downstream engine results
     error: dict[str, Any] | None = None
     created_at: float = Field(default_factory=time.time)
     completed_at: float | None = None

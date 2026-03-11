@@ -9,11 +9,13 @@ DFS tie-breaking: vertex label ascending, then vertex ID ascending.
 """
 from __future__ import annotations
 
+import logging
 from collections import defaultdict
 from typing import Generator
 
 from ..models import NormalizedGraph
 
+est_log = logging.getLogger("gq.estimation")
 
 def _build_adjacency(graph: NormalizedGraph) -> dict[int, set[int]]:
     adj: dict[int, set[int]] = defaultdict(set)
@@ -71,6 +73,7 @@ def enumerate_connected_orders_exact(
             in_path.discard(v)
 
     dfs([], set())
+    est_log.info("EXACT_DFS | V=%d | orders_generated=%d", n, len(results))
     return results
 
 
@@ -122,11 +125,14 @@ def enumerate_connected_orders_beam(
 
         # Beam truncation: keep top-b by deterministic ordering
         # (Without real scores yet, just keep first beam_width)
+        truncated_from = len(next_level)
         if len(next_level) > beam_width:
             next_level = next_level[:beam_width]
 
         active = next_level
+        est_log.debug("BEAM_LEVEL | level=%d | candidates_before_truncation=%d | candidates_kept=%d", _level, truncated_from, len(active))
 
+    est_log.info("BEAM_SEARCH_DONE | V=%d | beam_width=%d | orders_generated=%d", n, beam_width, len(active))
     return [path for path, _ in active]
 
 

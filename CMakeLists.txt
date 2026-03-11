@@ -18,7 +18,7 @@ find_package(TBB REQUIRED)
 
 # ===== Target 1: CLI executable =====
 file(GLOB_RECURSE SOURCES
-    "driver/*.cc"
+    "core/driver/*.cc"
 )
 
 add_executable(Fastest ${SOURCES})
@@ -26,7 +26,7 @@ add_executable(Fastest ${SOURCES})
 target_include_directories(Fastest PRIVATE
     ${Boost_INCLUDE_DIRS}
     ${GSL_INCLUDE_DIRS}
-    ${CMAKE_SOURCE_DIR}/lib
+    ${CMAKE_SOURCE_DIR}/core/lib
 )
 
 target_link_libraries(Fastest
@@ -41,12 +41,12 @@ target_link_libraries(Fastest
 # ===== Target 2: Pybind11 module (fastest_core.so) =====
 find_package(pybind11 QUIET)
 if(pybind11_FOUND)
-    pybind11_add_module(fastest_core pybind/FastestPybind.cc)
+    pybind11_add_module(fastest_core core/pybind/FastestPybind.cc)
 
     target_include_directories(fastest_core PRIVATE
         ${Boost_INCLUDE_DIRS}
         ${GSL_INCLUDE_DIRS}
-        ${CMAKE_SOURCE_DIR}/lib
+        ${CMAKE_SOURCE_DIR}/core/lib
     )
 
     target_link_libraries(fastest_core

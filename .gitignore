@@ -37,3 +37,11 @@ frontend/dist/
 *.toc
 *.synctex.gz
 *.pdf
+
+# Extra ignores
+**/*.o
+**/*.out
+**/*.a
+**/*.bin
+**/*.index
+logs/

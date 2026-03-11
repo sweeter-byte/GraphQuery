@@ -2,6 +2,7 @@
 #include <pybind11/stl.h>
 #include <stdexcept>
 #include <mutex>
+#include <omp.h>
 
 // Must define these before Graph.h since it defines globals in namespace GraphLib.
 // We use a separate compilation unit so these globals are defined exactly once.
@@ -111,31 +112,45 @@ public:
             edge_labels_vec.push_back(el);
         }
 
-        // Thread safety: lock for the estimation since internal structures
-        // (CandidateSpace, Samplers) allocate based on data_graph state
-        std::lock_guard<std::mutex> lock(estimate_mutex_);
+        int requested_omp_threads = prefix_payload.contains("omp_threads") ? prefix_payload["omp_threads"].cast<int>() : GraphLib::num_threads;
 
-        // Build the PatternGraph in memory
-        auto prefix_graph = std::make_unique<PatternGraph>();
-        prefix_graph->LoadGraph(vertex_labels, edge_pairs, edge_labels_vec);
-        prefix_graph->ProcessPattern(data_graph_);
-        prefix_graph->EnumerateLocalTriangles();
-        prefix_graph->query_EnumerateLocalFourCycles();
+        double est = 0.0;
+        dict cpp_result;
+        {
+            // Release the GIL during heavy C++ work to prevent deadlocks across Python async threads
+            py::gil_scoped_release release;
 
-        // Update MAX_QUERY_VERTEX/EDGE to accommodate this prefix
-        opt_.MAX_QUERY_VERTEX = std::max(opt_.MAX_QUERY_VERTEX, prefix_graph->GetNumVertices());
-        opt_.MAX_QUERY_EDGE = std::max(opt_.MAX_QUERY_EDGE, prefix_graph->GetNumEdges());
+            // Dynamically set OpenMP threads for this execution block
+            omp_set_num_threads(requested_omp_threads);
+            int prev_global_threads = GraphLib::num_threads;
+            GraphLib::num_threads = requested_omp_threads;
 
-        // Run the estimation
-        CardinalityEstimation::FaSTestCardinalityEstimation estimator(&data_graph_, opt_);
-        double est = estimator.EstimateEmbeddings(prefix_graph.get());
+            // Build the PatternGraph in memory
+            auto prefix_graph = std::make_unique<PatternGraph>();
+            prefix_graph->LoadGraph(vertex_labels, edge_pairs, edge_labels_vec);
+            prefix_graph->ProcessPattern(data_graph_);
+            prefix_graph->EnumerateLocalTriangles();
+            prefix_graph->query_EnumerateLocalFourCycles();
 
-        // Build result dict
+            // Copy opt_ to avoid race conditions when modifying limits concurrently
+            CardinalityEstimation::CardEstOption local_opt = opt_;
+            local_opt.MAX_QUERY_VERTEX = std::max(local_opt.MAX_QUERY_VERTEX, prefix_graph->GetNumVertices());
+            local_opt.MAX_QUERY_EDGE = std::max(local_opt.MAX_QUERY_EDGE, prefix_graph->GetNumEdges());
+
+            // Run the estimation
+            CardinalityEstimation::FaSTestCardinalityEstimation estimator(&data_graph_, local_opt);
+            est = estimator.EstimateEmbeddings(prefix_graph.get());
+            cpp_result = estimator.GetResult();
+
+            // Restore global threads (though concurrent calls might step on this, it's safer to restore)
+            GraphLib::num_threads = prev_global_threads;
+        }
+
+        // Re-acquire GIL automatically out of scope, build result dict
         py::dict result;
         result["estimated_cardinality"] = est;
 
         // Extract timing info from the internal result
-        dict cpp_result = estimator.GetResult();
         auto extract_double = [&](const std::string& key) {
             if (cpp_result.find(key) != cpp_result.end()) {
                 try { result[py::str(key)] = std::any_cast<double>(cpp_result[key]); }

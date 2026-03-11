@@ -1,18 +1,30 @@
 @import "tailwindcss";
 @import "@xyflow/react/dist/style.css";
 
+/* Enable class-based dark mode for Tailwind v4 */
+@custom-variant dark (&:where(.dark, .dark *));
+
 :root {
+  --bg-primary: #f8fafc;
+  --bg-secondary: #f1f5f9;
+  --bg-card: #ffffff;
+  --border: #e2e8f0;
+  --accent: #6366f1;
+  --accent-light: #818cf8;
+  --text-primary: #1e293b;
+  --text-secondary: #64748b;
+  --success: #10b981;
+  --warning: #f59e0b;
+  --danger: #ef4444;
+}
+
+.dark {
   --bg-primary: #0f172a;
   --bg-secondary: #1e293b;
   --bg-card: #1e293b;
   --border: #334155;
-  --accent: #6366f1;
-  --accent-light: #818cf8;
   --text-primary: #f1f5f9;
   --text-secondary: #94a3b8;
-  --success: #10b981;
-  --warning: #f59e0b;
-  --danger: #ef4444;
 }
 
 * {
@@ -25,21 +37,63 @@ body {
   background: var(--bg-primary);
   color: var(--text-primary);
   -webkit-font-smoothing: antialiased;
+  transition: background-color 0.3s, color 0.3s;
 }
 
 #root {
   min-height: 100vh;
 }
 
-::-webkit-scrollbar { width: 6px; height: 6px; }
-::-webkit-scrollbar-track { background: var(--bg-primary); }
-::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
-::-webkit-scrollbar-thumb:hover { background: var(--accent); }
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--bg-primary);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--accent);
+}
 
 .react-flow__node {
   font-size: 12px;
+  background: transparent !important;
+  border: none !important;
+  border-radius: 50% !important; /* Force completely round boundary for selection if needed */
+  box-shadow: none !important;
 }
 
-.react-flow__background {
-  background: var(--bg-secondary) !important;
+/* Selected node glow effect - target the inner circular div instead of the rectangular wrapper */
+.react-flow__node.selected .graph-node,
+.react-flow__node.selected > div {
+  border-color: #818cf8 !important;
+  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.4), 0 0 20px rgba(99, 102, 241, 0.3) !important;
+  animation: node-pulse 1.5s ease-in-out infinite;
+  border-radius: 50% !important;
+}
+
+@keyframes node-pulse {
+
+  0%,
+  100% {
+    box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.4), 0 0 20px rgba(99, 102, 241, 0.3);
+  }
+
+  50% {
+    box-shadow: 0 0 0 5px rgba(99, 102, 241, 0.3), 0 0 30px rgba(99, 102, 241, 0.5);
+  }
+}
+
+/* Selected edge glow */
+.react-flow__edge.selected .react-flow__edge-path {
+  stroke: #a5b4fc !important;
+  stroke-width: 4px !important;
+  filter: drop-shadow(0 0 6px rgba(99, 102, 241, 0.6));
 }

@@ -375,6 +375,17 @@ class TestDatasetAPI:
 # =============================================================================
 
 class TestSessionAPI:
+    @pytest.fixture(autouse=True)
+    def setup_mock_dataset(self):
+        from server.models import DatasetInfo, IndexStatus
+        from server.routes.sessions import _get_storage
+        storage = _get_storage()
+        storage.datasets["yeast"] = DatasetInfo(
+            id="yeast", name="yeast", num_vertices=100, num_edges=200, labels=[0, 1],
+            index_status=IndexStatus.READY, index_artifact_path="mock/path"
+        )
+        yield
+        
     def test_create_session_invalid_dataset(self):
         resp = client.post("/api/sessions", json={
             "dataset_id": "nonexistent",
@@ -458,6 +469,13 @@ class TestSessionAPI:
 
 @pytest.mark.asyncio
 async def test_full_session_with_sse():
+    from server.models import DatasetInfo, IndexStatus
+    from server.routes.sessions import _get_storage
+    storage = _get_storage()
+    storage.datasets["yeast"] = DatasetInfo(
+        id="yeast", name="yeast", num_vertices=100, num_edges=200, labels=[0, 1],
+        index_status=IndexStatus.READY, index_artifact_path="mock/path"
+    )
     """
     End-to-end async integration test:
     Create a session, read SSE stream, verify all event types.
@@ -530,6 +548,13 @@ async def test_full_session_with_sse():
 
 @pytest.mark.asyncio
 async def test_full_session_triangle():
+    from server.models import DatasetInfo, IndexStatus
+    from server.routes.sessions import _get_storage
+    storage = _get_storage()
+    storage.datasets["yeast"] = DatasetInfo(
+        id="yeast", name="yeast", num_vertices=100, num_edges=200, labels=[0, 1],
+        index_status=IndexStatus.READY, index_artifact_path="mock/path"
+    )
     """
     End-to-end test with a triangle query (more complex than edge).
     Verifies multiple orders and ranking.

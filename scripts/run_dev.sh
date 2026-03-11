@@ -5,7 +5,7 @@
 
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
+ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 BACKEND_PID=""
 FRONTEND_PID=""
 
@@ -28,10 +28,14 @@ if ! python3 -c "import fastest_core" 2>/dev/null; then
 fi
 
 # ── Step 2: Install Python deps if needed ──
-if ! python3 -c "import fastapi" 2>/dev/null; then
-    echo "Installing Python dependencies..."
-    pip install -r "$ROOT_DIR/server/requirements.txt" -q
+CONDA_ENV="fastest"
+if ! conda info --envs | grep -q "^$CONDA_ENV "; then
+    echo "Creating Conda environment '$CONDA_ENV'..."
+    conda create -n "$CONDA_ENV" python=3.10 -y
 fi
+
+echo "Activating '$CONDA_ENV' and installing Python dependencies..."
+conda run -n "$CONDA_ENV" python -m pip install -r "$ROOT_DIR/server/requirements.txt" -q
 
 # ── Step 3: Install frontend deps if needed ──
 if [ ! -d "$ROOT_DIR/frontend/node_modules" ]; then
@@ -40,12 +44,23 @@ if [ ! -d "$ROOT_DIR/frontend/node_modules" ]; then
 fi
 
 # ── Step 4: Start backend ──
+# Kill any leftover processes on port 8000 from previous runs
+if command -v fuser &>/dev/null; then
+    fuser -k 8000/tcp 2>/dev/null || true
+elif command -v ss &>/dev/null; then
+    STALE_PIDS=$(ss -lptn 'sport = :8000' | grep -oP 'pid=\K[0-9]+' | sort -u)
+    for pid in $STALE_PIDS; do
+        kill -9 "$pid" 2>/dev/null || true
+    done
+fi
+sleep 1
+
 echo "Starting FastAPI backend on http://localhost:8000 ..."
-(cd "$ROOT_DIR" && uvicorn server.main:app --reload --host 0.0.0.0 --port 8000) &
+(cd "$ROOT_DIR" && conda run -n "$CONDA_ENV" uvicorn server.main:app --reload --host 0.0.0.0 --port 8000) &
 BACKEND_PID=$!
 
-# Give the backend a moment to start
-sleep 2
+# Give the backend enough time to start (conda activation takes a moment)
+sleep 4
 
 # ── Step 5: Start frontend ──
 echo "Starting Vite dev server on http://localhost:5173 ..."

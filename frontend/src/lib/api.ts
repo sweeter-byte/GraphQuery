@@ -1,17 +1,23 @@
 import type { DatasetInfo, SessionCreateRequest, SessionCreateResponse } from '../types/api';
+import { frontendLogger as log } from './logger';
 
 const BASE = '/api';
 
 async function fetchJSON<T>(url: string, init?: RequestInit): Promise<T> {
+  const method = init?.method || 'GET';
+  log.debug('API', `${method} ${BASE}${url}`, init?.body ? JSON.parse(init.body as string) : undefined);
   const res = await fetch(`${BASE}${url}`, {
     headers: { 'Content-Type': 'application/json' },
     ...init,
   });
   if (!res.ok) {
     const body = await res.text();
+    log.error('API', `${method} ${BASE}${url} → ${res.status}`, body);
     throw new Error(`API error ${res.status}: ${body}`);
   }
-  return res.json();
+  const data = await res.json();
+  log.info('API', `${method} ${BASE}${url} → ${res.status}`, data);
+  return data;
 }
 
 export async function fetchDatasets(): Promise<DatasetInfo[]> {

@@ -36,3 +36,19 @@ async def get_dataset(dataset_id: str):
     if ds is None:
         raise HTTPException(status_code=404, detail=f"Dataset '{dataset_id}' not found")
     return ds
+
+
+@router.post("/load", status_code=202)
+async def load_dataset(dataset_id: str):
+    """Pre-load dataset index into memory."""
+    from ..services.estimator_adapter import get_estimator_adapter
+    
+    ds = _get_storage().get_dataset(dataset_id)
+    if ds is None:
+        raise HTTPException(status_code=404, detail=f"Dataset '{dataset_id}' not found")
+    
+    adapter = get_estimator_adapter()
+    # load_dataset is idempotent
+    adapter.load_dataset(dataset_id)
+    
+    return {"status": "loading", "dataset_id": dataset_id}

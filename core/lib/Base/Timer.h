@@ -8,12 +8,12 @@ public:
     Timer() : time(0.0) {}
     ~Timer() {}
 
-    void Start() { s = std::chrono::high_resolution_clock::now(); }
+    void Start() { s = std::chrono::steady_clock::now(); }
 
     void Stop() {
-        e = std::chrono::high_resolution_clock::now();
+        e = std::chrono::steady_clock::now();
         time += std::chrono::duration<double, std::milli>(e - s).count();
-        s = std::chrono::high_resolution_clock::now();
+        s = std::chrono::steady_clock::now();
     }
 
     void Add(const Timer &other) { time += other.time; }
@@ -27,6 +27,6 @@ public:
     double time;
 
 private:
-    std::chrono::high_resolution_clock::time_point s, e;
+    std::chrono::steady_clock::time_point s, e;
 };
 #endif

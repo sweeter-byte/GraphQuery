@@ -14,7 +14,6 @@
 
 namespace GraphLib {
 namespace SubgraphMatching {
-    BipartiteMaximumMatching BPSolver;
     enum STRUCTURE_FILTER {
         NO_STRUCTURE_FILTER,
         TRIANGLE_SAFETY,
@@ -36,6 +35,7 @@ namespace SubgraphMatching {
     class CandidateSpace {
     public:
         SubgraphMatchingOption opt;
+        BipartiteMaximumMatching BPSolver;
         CandidateSpace(DataGraph *data, SubgraphMatchingOption filter_option);
 
         ~CandidateSpace();

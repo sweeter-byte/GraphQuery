@@ -34,10 +34,17 @@ export interface DatasetInfo {
 // ── Session Models ──
 export type SessionStatus = 'queued' | 'running' | 'completed' | 'failed';
 
+export interface ScheduleConfig {
+  mode: 'auto' | 'custom';
+  python_threads: number;
+  omp_threads: number;
+}
+
 export interface SessionCreateRequest {
   dataset_id: string;
   query_graph: QueryGraph;
   beam_width?: number | null;
+  schedule_config?: ScheduleConfig;
 }
 
 export interface SessionCreateResponse {

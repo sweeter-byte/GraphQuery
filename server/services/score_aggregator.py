@@ -18,6 +18,7 @@ from typing import Any
 from ..models import SSEEvent
 
 logger = logging.getLogger(__name__)
+sse_log = logging.getLogger("gq.session")
 
 # Weight function — hardcoded to 1.0 per the technical supplement.
 # Future: implement dynamic weighting here without touching C++ or frontend.
@@ -112,18 +113,22 @@ class ScoreAggregator:
         # Update ranking
         self._update_ranking(order_id, tracker.score)
 
-        # Check for best order change
-        if self.best_score is None or tracker.score < self.best_score:
-            old_best = self.best_order_id
-            self.best_order_id = order_id
-            self.best_score = tracker.score
-            if old_best != order_id:
+        # Update best order to the current rank 1
+        if self.ranking:
+            current_best_score, current_best_order_id = self.ranking[0]
+            if current_best_order_id != self.best_order_id or current_best_score != self.best_score:
+                logger.debug(
+                    "RANK_SHIFT | previous_best_id=%s -> new_best_id=%s | new_score=%.2f",
+                    self.best_order_id, current_best_order_id, current_best_score
+                )
+                self.best_order_id = current_best_order_id
+                self.best_score = current_best_score
                 events.append(SSEEvent(
                     event="best_order_selected",
                     data={
-                        "order_id": order_id,
-                        "order": tracker.order,
-                        "score": tracker.score,
+                        "order_id": current_best_order_id,
+                        "order": self.trackers[current_best_order_id].order,
+                        "score": current_best_score,
                     },
                 ))
 
@@ -245,6 +250,11 @@ class ScoreAggregator:
         """Combine multiple events into a single batch_update event."""
         if len(events) == 1:
             return events[0]
+        sse_log.debug(
+            "SSE_BATCH_FLUSH | events=%d | types=%s",
+            len(events),
+            ", ".join(e.event for e in events),
+        )
         return SSEEvent(
             event="batch_update",
             data={

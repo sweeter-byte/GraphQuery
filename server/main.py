@@ -8,17 +8,21 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware
 
+from .logging_config import setup_logging, get_logger
 from .storage import Storage
 from .routes import datasets, sessions
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-)
+# Initialize structured logging BEFORE anything else
+setup_logging()
+
+http_log = get_logger("http")
+logger = logging.getLogger(__name__)
 
 DATASET_ROOT = os.environ.get("DATASET_ROOT", "dataset")
 
@@ -27,6 +31,25 @@ app = FastAPI(
     description="Interactive graph query plan optimization via FaSTest cardinality estimation",
     version="0.1.0",
 )
+
+
+# ── Request / Response logging middleware ──
+class RequestLoggingMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        start = time.time()
+        response = await call_next(request)
+        elapsed_ms = (time.time() - start) * 1000
+        http_log.info(
+            "%s %s → %d (%.1fms)",
+            request.method,
+            request.url.path,
+            response.status_code,
+            elapsed_ms,
+        )
+        return response
+
+
+app.add_middleware(RequestLoggingMiddleware)
 
 # CORS for frontend dev server
 app.add_middleware(
@@ -44,6 +67,8 @@ sessions.init_router(storage, dataset_root=DATASET_ROOT)
 
 app.include_router(datasets.router)
 app.include_router(sessions.router)
+
+logger.info("GraphQuery server initialized — dataset_root=%s", DATASET_ROOT)
 
 
 @app.get("/api/health")
