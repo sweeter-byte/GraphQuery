@@ -7,13 +7,13 @@ Run with:
 from __future__ import annotations
 
 import logging
-import os
 import time
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
 
+from .config import get_config
 from .logging_config import setup_logging, get_logger
 from .storage import Storage
 from .routes import datasets, sessions
@@ -21,10 +21,10 @@ from .routes import datasets, sessions
 # Initialize structured logging BEFORE anything else
 setup_logging()
 
-http_log = get_logger("http")
+http_log = get_logger("api")
 logger = logging.getLogger(__name__)
 
-DATASET_ROOT = os.environ.get("DATASET_ROOT", "dataset")
+config = get_config()
 
 app = FastAPI(
     title="Graph Query Planning System",
@@ -40,7 +40,7 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
         response = await call_next(request)
         elapsed_ms = (time.time() - start) * 1000
         http_log.info(
-            "%s %s → %d (%.1fms)",
+            "%s %s -> %d (%.1fms)",
             request.method,
             request.url.path,
             response.status_code,
@@ -61,14 +61,14 @@ app.add_middleware(
 )
 
 # Initialize storage and inject into routers
-storage = Storage(dataset_root=DATASET_ROOT)
+storage = Storage(dataset_root=config.dataset_root)
 datasets.init_router(storage)
-sessions.init_router(storage, dataset_root=DATASET_ROOT)
+sessions.init_router(storage)
 
 app.include_router(datasets.router)
 app.include_router(sessions.router)
 
-logger.info("GraphQuery server initialized — dataset_root=%s", DATASET_ROOT)
+logger.info("GraphQuery server initialized -- dataset_root=%s", config.dataset_root)
 
 
 @app.get("/api/health")
