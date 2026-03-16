@@ -20,12 +20,17 @@ from typing import Any
 logger = logging.getLogger(__name__)
 exec_log = logging.getLogger("gq.execution")
 
-# Default binary location (relative to project root)
-# from server/services/ to Fastest-par is 2 pardirs, then up 1 more to graph_query
-_DEFAULT_BINARY = os.path.join(
-    os.path.dirname(__file__), os.pardir, os.pardir, os.pardir,  # up to graph_query/
-    "SubgraphMatchingSurvey", "vlabel", "build", "matching",
-    "SubgraphMatching.out",
+# Default binary location under the vendored engine tree.
+_PROJECT_ROOT = Path(__file__).resolve().parents[2]
+_DEFAULT_BINARY = str(
+    _PROJECT_ROOT
+    / "core"
+    / "engines"
+    / "SubgraphMatchingSurvey"
+    / "vlabel"
+    / "build"
+    / "matching"
+    / "SubgraphMatching.out"
 )
 
 
@@ -66,7 +71,7 @@ class SurveyEngineAdapter:
         if not Path(self.binary_path).is_file():
             logger.warning(
                 "Survey binary not found at %s. "
-                "Build it with: cd SubgraphMatchingSurvey/vlabel/build && cmake .. && make -j$(nproc)",
+                "Build it with: cd core/engines/SubgraphMatchingSurvey/vlabel/build && cmake .. && make -j$(nproc)",
                 self.binary_path,
             )
 
@@ -75,6 +80,28 @@ class SurveyEngineAdapter:
         """Check whether the binary is present and executable."""
         p = Path(self.binary_path)
         return p.is_file() and os.access(str(p), os.X_OK)
+
+    def _build_subprocess_env(self) -> dict[str, str]:
+        """Ensure relocated build artifacts can still resolve shared libraries."""
+        env = os.environ.copy()
+
+        binary_path = Path(self.binary_path).resolve()
+        build_root = binary_path.parent.parent
+        lib_dirs = [
+            build_root / "graph",
+            build_root / "utility",
+            build_root / "utility" / "nucleus_decomposition",
+            build_root / "utility" / "execution_tree",
+        ]
+
+        existing = env.get("LD_LIBRARY_PATH", "")
+        entries = [str(path) for path in lib_dirs if path.is_dir()]
+        if existing:
+            entries.append(existing)
+        if entries:
+            env["LD_LIBRARY_PATH"] = ":".join(entries)
+
+        return env
 
     def execute(
         self,
@@ -156,6 +183,7 @@ class SurveyEngineAdapter:
                 capture_output=True,
                 text=True,
                 timeout=timeout,
+                env=self._build_subprocess_env(),
             )
             stdout = proc.stdout
             returncode = proc.returncode
