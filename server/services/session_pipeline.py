@@ -155,6 +155,7 @@ async def run_session_pipeline(
         prefix_cache: dict[frozenset[int], float] = {}
         cache_hits = 0
         cache_misses = 0
+        r3_skips = 0  # R3: count of skipped evaluations
 
         # Track completed count for progress
         completed_count = 0
@@ -182,6 +183,12 @@ async def run_session_pipeline(
 
                 for order_idx in range(len(orders)):
                     prefix = all_prefixes[order_idx][level]
+
+                    # R3: skip orders whose accumulated cost already exceeds threshold
+                    if optimized and aggregator.should_skip_order(order_idx):
+                        r3_skips += 1
+                        completed_count += 1
+                        continue
 
                     if optimized:
                         prefix_key = frozenset(orders[order_idx][:level + 1])
@@ -363,6 +370,10 @@ async def run_session_pipeline(
             last_n_edges = graph.num_edges
             last_n_vertices = graph.num_vertices
             for order_idx in range(len(orders)):
+                # R3: skip pruned orders in R1 broadcast too
+                if order_idx in aggregator.skipped_orders:
+                    completed_count += 1
+                    continue
                 completed_count += 1
                 events = aggregator.record_estimate(
                     order_idx, last_level, shared_c_hat,
@@ -394,6 +405,11 @@ async def run_session_pipeline(
                 cache_hits, cache_misses, total_cache_ops,
                 (cache_hits / total_cache_ops * 100) if total_cache_ops > 0 else 0.0,
             )
+            if r3_skips > 0:
+                est_log.info(
+                    "R3_EARLY_STOP | skipped_evaluations=%d | skipped_orders=%d/%d",
+                    r3_skips, len(aggregator.skipped_orders), len(orders),
+                )
 
         # --- Step 5: Run downstream execution (optional) ---
         execution_result = None

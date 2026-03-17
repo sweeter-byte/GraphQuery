@@ -80,6 +80,7 @@ async def create_session(req: SessionCreateRequest):
         order_strategy=req.order_strategy,
         prefix_eval_mode=req.prefix_eval_mode,
         weight_config=req.weight_config,
+        early_stop_config=req.early_stop_config,
         schedule_config=req.schedule_config,
         run_execution=req.run_execution,
         execution_config=req.execution_config,
@@ -99,7 +100,7 @@ async def create_session(req: SessionCreateRequest):
 
     # Create aggregator and launch pipeline
     # Convert Pydantic WeightConfigModel to dataclass WeightConfig for aggregator
-    from ..services.score_aggregator import WeightConfig
+    from ..services.score_aggregator import WeightConfig, EarlyStopConfig
     wc = None
     if req.weight_config:
         wc = WeightConfig(
@@ -107,7 +108,14 @@ async def create_session(req: SessionCreateRequest):
             gamma=req.weight_config.gamma,
             lam=req.weight_config.lam,
         )
-    aggregator = ScoreAggregator(weight_config=wc)
+    esc = None
+    if req.early_stop_config:
+        esc = EarlyStopConfig(
+            enabled=req.early_stop_config.enabled,
+            multiplier=req.early_stop_config.multiplier,
+            min_completed=req.early_stop_config.min_completed,
+        )
+    aggregator = ScoreAggregator(weight_config=wc, early_stop_config=esc)
     _aggregators[session.session_id] = aggregator
 
     adapter = get_estimator_adapter()

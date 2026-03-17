@@ -43,6 +43,22 @@ class WeightConfig:
     lam: float = 0.0
 
 
+@dataclass
+class EarlyStopConfig:
+    """Configuration for R3 adaptive early stopping.
+
+    Attributes:
+        enabled: Whether early stopping is active.
+        multiplier: Skip order when accumulated_score > multiplier * current_best_complete_score.
+            Higher = more conservative (fewer skips). Default 2.0.
+        min_completed: Minimum number of fully-evaluated orders before pruning starts.
+            Ensures we have a reliable baseline. Default 1.
+    """
+    enabled: bool = False
+    multiplier: float = 2.0
+    min_completed: int = 1
+
+
 # ---------------------------------------------------------------------------
 # Weight functions
 # ---------------------------------------------------------------------------
@@ -103,13 +119,23 @@ class ScoreAggregator:
 
     BATCH_INTERVAL_MS = 75  # 50-100ms debounce window
 
-    def __init__(self, top_k: int = 10, weight_config: WeightConfig | None = None):
+    def __init__(
+        self,
+        top_k: int = 10,
+        weight_config: WeightConfig | None = None,
+        early_stop_config: EarlyStopConfig | None = None,
+    ):
         self.top_k = top_k
         self.weight_config = weight_config or WeightConfig()
+        self.early_stop_config = early_stop_config or EarlyStopConfig()
         self.trackers: dict[int, OrderTracker] = {}
         self.ranking: list[tuple[float, int]] = []  # min-heap of (score, order_id)
         self.best_order_id: int | None = None
         self.best_score: float | None = None
+        # R3: track completed orders and skipped orders
+        self._n_completed: int = 0
+        self._best_complete_score: float | None = None  # best score among fully-evaluated orders
+        self.skipped_orders: set[int] = set()
 
         # SSE event queue
         self._event_queue: asyncio.Queue[SSEEvent | None] = asyncio.Queue()
@@ -181,6 +207,9 @@ class ScoreAggregator:
         # Check if order is complete
         if tracker.prefix_index >= n:
             tracker.done = True
+            self._n_completed += 1
+            if self._best_complete_score is None or tracker.score < self._best_complete_score:
+                self._best_complete_score = tracker.score
 
         # Update ranking
         self._update_ranking(order_id, tracker.score)
@@ -213,6 +242,33 @@ class ScoreAggregator:
             for t in self.trackers.values()
         ]
         self.ranking.sort()
+
+    def should_skip_order(self, order_id: int) -> bool:
+        """R3: Check if an order should be skipped (pruned) based on early stopping.
+
+        Returns True when:
+          1. Early stopping is enabled
+          2. At least min_completed orders have been fully evaluated
+          3. The order's current accumulated score already exceeds
+             multiplier * best_complete_score
+        """
+        cfg = self.early_stop_config
+        if not cfg.enabled:
+            return False
+        if self._n_completed < cfg.min_completed:
+            return False
+        if self._best_complete_score is None:
+            return False
+        tracker = self.trackers.get(order_id)
+        if tracker is None or tracker.done:
+            return False
+        if order_id in self.skipped_orders:
+            return True
+        threshold = cfg.multiplier * self._best_complete_score
+        if tracker.score > threshold:
+            self.skipped_orders.add(order_id)
+            return True
+        return False
 
     def get_top_k(self) -> list[dict[str, Any]]:
         return [

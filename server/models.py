@@ -30,6 +30,18 @@ class WeightConfigModel(BaseModel):
     gamma: float = 1.0
     lam: float = 0.0
 
+
+class EarlyStopConfigModel(BaseModel):
+    """R3 adaptive early stopping configuration (Pydantic model for API serialization).
+
+    enabled: Whether early stopping is active.
+    multiplier: Skip when accumulated_score > multiplier * best_complete_score. Default 2.0.
+    min_completed: Minimum fully-evaluated orders before pruning starts. Default 1.
+    """
+    enabled: bool = False
+    multiplier: float = 2.0
+    min_completed: int = 1
+
 # =============================================================================
 # Graph Models
 # =============================================================================
@@ -146,6 +158,7 @@ class SessionCreateRequest(BaseModel):
     order_strategy: str = "baseline"  # "baseline" | "pruned"
     prefix_eval_mode: str = "optimized"  # "optimized" (R1+R4) | "full" (baseline)
     weight_config: Optional[WeightConfigModel] = None  # None = uniform (baseline)
+    early_stop_config: Optional[EarlyStopConfigModel] = None  # None = disabled (baseline)
     schedule_config: Optional[ScheduleConfig] = None
     run_execution: bool = False  # Run downstream matching engine after scoring
     execution_config: Optional[dict] = None  # filter/order/engine/time_limit overrides
