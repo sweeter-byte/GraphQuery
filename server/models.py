@@ -131,6 +131,7 @@ class SessionCreateRequest(BaseModel):
     dataset_id: str
     query_graph: QueryGraph
     beam_width: int | None = None  # None = exact mode
+    order_strategy: str = "baseline"  # "baseline" | "pruned"
     schedule_config: Optional[ScheduleConfig] = None
     run_execution: bool = False  # Run downstream matching engine after scoring
     execution_config: Optional[dict] = None  # filter/order/engine/time_limit overrides
@@ -149,6 +150,7 @@ class Session(BaseModel):
     normalized_graph: NormalizedGraph | None = None
     status: SessionStatus = SessionStatus.QUEUED
     beam_width: int | None = None
+    order_strategy: str = "baseline"  # "baseline" | "pruned"
     orders: list[OrderState] = Field(default_factory=list)
     best_order_id: int | None = None
     best_score: float | None = None

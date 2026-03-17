@@ -77,6 +77,7 @@ async def create_session(req: SessionCreateRequest):
         query_graph=req.query_graph,
         normalized_graph=normalized,
         beam_width=req.beam_width,
+        order_strategy=req.order_strategy,
         schedule_config=req.schedule_config,
         run_execution=req.run_execution,
         execution_config=req.execution_config,

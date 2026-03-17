@@ -26,7 +26,7 @@ from ..models import (
 from ..config import resolve_schedule_config
 from ..logging_config import set_session_id, clear_session_id
 from .estimator_adapter import EstimatorAdapter
-from .order_generator import generate_orders
+from .order_strategies import generate_orders as strategic_generate_orders
 from .prefix_builder import build_prefix_subgraphs
 from .score_aggregator import ScoreAggregator
 
@@ -88,7 +88,9 @@ async def run_session_pipeline(
         if graph is None:
             raise RuntimeError("Normalized graph not set on session")
 
-        orders = generate_orders(graph, beam_width=session.beam_width)
+        orders = strategic_generate_orders(
+            graph, beam_width=session.beam_width, strategy=session.order_strategy,
+        )
 
         if not orders:
             raise RuntimeError("No valid connected expansion orders found")
