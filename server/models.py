@@ -18,6 +18,18 @@ class ScheduleConfig(BaseModel):
     python_threads: int = 4
     omp_threads: int = 4
 
+
+class WeightConfigModel(BaseModel):
+    """Cost model weight configuration (Pydantic model for API serialization).
+
+    mode: "uniform" (omega=1.0, original baseline) or "weighted" (position-topology aware).
+    gamma: Position decay exponent (>0). Higher = more weight on early prefixes.
+    lam: Topology sensitivity coefficient (>=0). Higher = more weight on cyclic prefixes.
+    """
+    mode: str = "uniform"
+    gamma: float = 1.0
+    lam: float = 0.0
+
 # =============================================================================
 # Graph Models
 # =============================================================================
@@ -133,6 +145,7 @@ class SessionCreateRequest(BaseModel):
     beam_width: int | None = None  # None = exact mode
     order_strategy: str = "baseline"  # "baseline" | "pruned"
     prefix_eval_mode: str = "optimized"  # "optimized" (R1+R4) | "full" (baseline)
+    weight_config: Optional[WeightConfigModel] = None  # None = uniform (baseline)
     schedule_config: Optional[ScheduleConfig] = None
     run_execution: bool = False  # Run downstream matching engine after scoring
     execution_config: Optional[dict] = None  # filter/order/engine/time_limit overrides
@@ -153,6 +166,7 @@ class Session(BaseModel):
     beam_width: int | None = None
     order_strategy: str = "baseline"  # "baseline" | "pruned"
     prefix_eval_mode: str = "optimized"  # "optimized" (R1+R4) | "full" (baseline)
+    weight_config: Optional[WeightConfigModel] = None  # None = uniform (baseline)
     orders: list[OrderState] = Field(default_factory=list)
     best_order_id: int | None = None
     best_score: float | None = None

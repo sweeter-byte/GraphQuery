@@ -254,7 +254,11 @@ async def run_session_pipeline(
                 # Process cached results first (no C++ call needed)
                 for order_idx, c_hat in cached_results:
                     completed_count += 1
-                    events = aggregator.record_estimate(order_idx, level, c_hat)
+                    pfx = all_prefixes[order_idx][level]
+                    events = aggregator.record_estimate(
+                        order_idx, level, c_hat,
+                        n_edges=pfx.num_edges, n_vertices=pfx.num_vertices,
+                    )
                     if order_idx < len(session.orders):
                         session.orders[order_idx].prefix_index = level + 1
                         session.orders[order_idx].score = aggregator.trackers[order_idx].score
@@ -278,7 +282,11 @@ async def run_session_pipeline(
                         # Broadcast to orders that were waiting on this key
                         for waiting_idx in pending_by_key.get(pkey, []):
                             completed_count += 1
-                            w_events = aggregator.record_estimate(waiting_idx, level, c_hat)
+                            w_pfx = all_prefixes[waiting_idx][level]
+                            w_events = aggregator.record_estimate(
+                                waiting_idx, level, c_hat,
+                                n_edges=w_pfx.num_edges, n_vertices=w_pfx.num_vertices,
+                            )
                             if waiting_idx < len(session.orders):
                                 session.orders[waiting_idx].prefix_index = level + 1
                                 session.orders[waiting_idx].score = aggregator.trackers[waiting_idx].score
@@ -289,7 +297,11 @@ async def run_session_pipeline(
                             await asyncio.sleep(0)
 
                     # Record in aggregator and get events
-                    events = aggregator.record_estimate(order_idx, level, c_hat)
+                    pfx = all_prefixes[order_idx][level]
+                    events = aggregator.record_estimate(
+                        order_idx, level, c_hat,
+                        n_edges=pfx.num_edges, n_vertices=pfx.num_vertices,
+                    )
 
                     # Update session state
                     if order_idx < len(session.orders):
@@ -347,10 +359,15 @@ async def run_session_pipeline(
                 last_level, shared_c_hat, len(orders) - 1,
             )
 
-            # Broadcast to all orders
+            # Broadcast to all orders — last prefix is the full query graph
+            last_n_edges = graph.num_edges
+            last_n_vertices = graph.num_vertices
             for order_idx in range(len(orders)):
                 completed_count += 1
-                events = aggregator.record_estimate(order_idx, last_level, shared_c_hat)
+                events = aggregator.record_estimate(
+                    order_idx, last_level, shared_c_hat,
+                    n_edges=last_n_edges, n_vertices=last_n_vertices,
+                )
                 if order_idx < len(session.orders):
                     session.orders[order_idx].prefix_index = last_level + 1
                     session.orders[order_idx].score = aggregator.trackers[order_idx].score

@@ -6,13 +6,21 @@ Responsibilities:
   - Maintain Top-K ranking across all orders
   - Buffer SSE events with 50-100ms debounce window
   - Emit batched events to avoid overwhelming the frontend
+
+Weight modes:
+  - "uniform": omega_k = 1.0 (original baseline)
+  - "weighted": omega(k, Q_k) = alpha(k) * beta(Q_k)
+      alpha(k) = ((n - k + 1) / n) ^ gamma       — position decay
+      beta(Q_k) = 1 + lambda * (E_k - V_k + 1) / V_k  — topology factor
 """
 from __future__ import annotations
 
 import asyncio
 import heapq
 import logging
+import math
 import time
+from dataclasses import dataclass, field
 from typing import Any
 
 from ..models import SSEEvent
@@ -20,10 +28,56 @@ from ..models import SSEEvent
 logger = logging.getLogger(__name__)
 sse_log = logging.getLogger("gq.session")
 
-# Weight function — hardcoded to 1.0 per the technical supplement.
-# Future: implement dynamic weighting here without touching C++ or frontend.
-def get_weight(k: int, n: int) -> float:
-    return 1.0
+
+@dataclass
+class WeightConfig:
+    """Configuration for the cost model weight function.
+
+    Attributes:
+        mode: "uniform" (omega=1.0) or "weighted" (position-topology aware).
+        gamma: Position decay exponent (>0). Higher = more weight on early prefixes.
+        lam: Topology sensitivity coefficient (>=0). Higher = more weight on cyclic prefixes.
+    """
+    mode: str = "uniform"
+    gamma: float = 1.0
+    lam: float = 0.0
+
+
+# ---------------------------------------------------------------------------
+# Weight functions
+# ---------------------------------------------------------------------------
+
+def get_weight(
+    k: int,
+    n: int,
+    *,
+    n_edges: int = 0,
+    n_vertices: int = 0,
+    config: WeightConfig | None = None,
+) -> float:
+    """Compute weight omega for the k-th prefix (1-indexed) of an n-vertex query.
+
+    When config is None or config.mode == "uniform", returns 1.0 (original behavior).
+    When config.mode == "weighted", returns alpha(k) * beta(Q_k).
+    """
+    if config is None or config.mode == "uniform":
+        return 1.0
+
+    # --- Position factor: alpha(k) = ((n - k + 1) / n) ^ gamma ---
+    gamma = config.gamma
+    alpha = ((n - k + 1) / n) ** gamma if n > 0 else 1.0
+
+    # --- Topology factor: beta(Q_k) = 1 + lam * (E_k - V_k + 1) / V_k ---
+    # When Q_k is a tree: E_k = V_k - 1, so beta = 1.
+    # More cycles → higher beta → more informative prefix gets higher weight.
+    lam = config.lam
+    if n_vertices > 0 and lam > 0:
+        excess_edges = n_edges - (n_vertices - 1)  # 0 for tree, >0 for cyclic
+        beta = 1.0 + lam * max(excess_edges, 0) / n_vertices
+    else:
+        beta = 1.0
+
+    return alpha * beta
 
 
 class OrderTracker:
@@ -49,8 +103,9 @@ class ScoreAggregator:
 
     BATCH_INTERVAL_MS = 75  # 50-100ms debounce window
 
-    def __init__(self, top_k: int = 10):
+    def __init__(self, top_k: int = 10, weight_config: WeightConfig | None = None):
         self.top_k = top_k
+        self.weight_config = weight_config or WeightConfig()
         self.trackers: dict[int, OrderTracker] = {}
         self.ranking: list[tuple[float, int]] = []  # min-heap of (score, order_id)
         self.best_order_id: int | None = None
@@ -66,15 +121,32 @@ class ScoreAggregator:
     def register_order(self, order_id: int, order: list[int], n_prefixes: int) -> None:
         self.trackers[order_id] = OrderTracker(order_id, order, n_prefixes)
 
-    def record_estimate(self, order_id: int, prefix_index: int, c_hat: float) -> list[SSEEvent]:
+    def record_estimate(
+        self,
+        order_id: int,
+        prefix_index: int,
+        c_hat: float,
+        *,
+        n_edges: int = 0,
+        n_vertices: int = 0,
+    ) -> list[SSEEvent]:
         """
         Record an estimation result and return generated events.
         Called from the worker coroutine; events are also pushed to the internal queue.
+
+        Parameters
+        ----------
+        n_edges, n_vertices : prefix subgraph topology, used by weighted mode.
+            Ignored when weight_config.mode == "uniform".
         """
         tracker = self.trackers[order_id]
         k = prefix_index + 1  # 1-indexed for formula
         n = tracker.n_prefixes
-        omega = get_weight(k, n)
+        omega = get_weight(
+            k, n,
+            n_edges=n_edges, n_vertices=n_vertices,
+            config=self.weight_config,
+        )
 
         tracker.estimates.append(c_hat)
         tracker.score += omega * c_hat

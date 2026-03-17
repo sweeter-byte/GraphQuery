@@ -23,6 +23,7 @@
 | E5 | 查询规模敏感性 | 查询图越大，优化收益越明显吗？ |
 | E6 | 数据集泛化性 | 在不同数据集上结论是否一致？ |
 | **E7** | **M1 搜索空间剪枝** | **剪枝策略能否在保持序列质量的前提下显著缩减搜索空间？** |
+| **E8** | **M2 前缀子图去重** | **前缀去重（R1+R4）能否在排序无损的前提下显著缩减 C++ 估计调用次数和 M2 耗时？** |
 
 ---
 
@@ -218,6 +219,7 @@ T_baseline  = T_M3(RAND 执行)    // 或 T_M3(DEFAULT 执行)
 4. **E5** → "查询越复杂，优化收益越大，这符合直觉"
 5. **E6** → "结论在多个真实数据集上一致成立"
 6. **E7** → "M1 搜索空间剪枝在保持序列质量的前提下显著缩减搜索空间和端到端耗时"
+7. **E8** → "M2 前缀子图去重在排序完全无损的前提下，大幅缩减 C++ 估计调用次数，显著降低 M2 耗时"
 
 如果 E3 在小查询上不成立，这不是坏结果 — 它精确划定了优化器的适用边界，反而增强论文的可信度。
 
@@ -560,3 +562,243 @@ E7 的结果与现有实验的关系：
 - **E7b** → "剪枝不牺牲序列质量，Top-1 序列的执行性能基本无损"
 - **E7e + E3** → "M1 剪枝使端到端收益的盈亏平衡点从 |V_q|=8 提前到 |V_q|=6"
 - **E7d** → "cost_factor 参数提供了搜索空间与质量之间的可调旋钮"
+
+---
+
+## E8：M2 前缀子图去重实验
+
+### 8.1 背景与动机
+
+M2 阶段对每条候选序列的每个前缀子图调用 C++ FaSTest 引擎做基数估计。原始实现中，$|\Omega|$ 条序列、$n$ 个查询顶点，总共需要 $n \times |\Omega|$ 次 C++ 调用。
+
+但不同序列在同一层或不同层可能产生**顶点集合完全相同的前缀子图**（诱导子图相同 → 基数估计值必然相同）。例如序列 $(v_0, v_1, v_2, v_3)$ 和 $(v_0, v_1, v_3, v_2)$ 在第 2 层的前缀顶点集都是 $\{v_0, v_1\}$，对应的诱导子图完全一致。此外，所有序列的第 $n$ 层前缀都是完整查询图 $Q$ 本身。
+
+为此，我们实现了两项去重优化：
+
+- **R1（末尾前缀消除）**：最后一层 $Q_n = Q$ 只估计一次，广播给所有序列
+- **R4（前缀 Memoization）**：以 `frozenset(vertex_ids)` 为 key 缓存估计结果，同层内通过 `pending_by_key` 分组避免重复提交，跨层通过 `prefix_cache` 复用
+
+两项优化均为**精确无损**——不改变任何序列的任何前缀估计值，因此代价排序完全不变。
+
+通过 `prefix_eval_mode` 参数控制：`"optimized"`（默认，R1+R4 启用）vs `"full"`（全量估计，实验基线）。
+
+### 8.2 实验设计
+
+#### E8a：C++ 估计调用缩减率
+
+**目的**：量化 R1 和 R4 分别节省了多少 C++ 调用，以及总缩减率。
+
+**方法**：
+
+对每个 (数据集, 查询图) 组合，分别以 `prefix_eval_mode="full"` 和 `prefix_eval_mode="optimized"` 运行 M2，记录：
+
+| 指标 | 说明 |
+|------|------|
+| `N_calls_full` | full 模式下的 C++ 估计调用总次数（= $n \times |\Omega|$） |
+| `N_calls_optimized` | optimized 模式下的实际 C++ 调用次数 |
+| `N_saved_R1` | R1 节省的调用次数（= $|\Omega| - 1$） |
+| `N_saved_R4` | R4 缓存命中次数（从日志 `R4_CACHE_STATS` 中提取 `hits`） |
+| `N_unique_prefixes` | 去重后的唯一前缀子图数量（= `cache_misses`） |
+| `dedup_ratio` | 去重率 = $1 - N\_calls\_optimized / N\_calls\_full$ |
+
+**消融配置**：
+
+| 配置 | R1 | R4 | 说明 |
+|------|----|----|------|
+| Full（baseline） | ✗ | ✗ | `prefix_eval_mode="full"` |
+| R1-only | ✓ | ✗ | 仅跳过最后一层，不做缓存 |
+| R4-only | ✗ | ✓ | 不跳过最后一层，但做缓存 |
+| R1+R4（默认） | ✓ | ✓ | `prefix_eval_mode="optimized"` |
+
+注：R1-only 和 R4-only 需要在实验脚本中临时修改 `session_pipeline.py` 的 `optimized` 逻辑，或添加更细粒度的开关参数。
+
+**查询工作负载**：6 数据集 × |V_q| = {4, 8, 12, 16} × 50 查询 = 1200 实验点
+
+**输出**：
+- 表格：各配置在不同 |V_q| 下的 `dedup_ratio`
+- 堆叠柱状图：每个 |V_q| 下 R1 和 R4 各自的节省量占比
+- 折线图：横轴 |V_q|，纵轴 `dedup_ratio`（期望随 |V_q| 增大而增大，因为大图的序列间前缀共享更多）
+
+#### E8b：M2 耗时缩减
+
+**目的**：量化去重优化对 M2 阶段实际耗时（wall-clock time）的缩减效果。
+
+**方法**：
+
+对每个查询，分别以 full 和 optimized 模式运行完整 pipeline，记录：
+
+| 指标 | 说明 |
+|------|------|
+| `T_M2_full` | full 模式下 M2 阶段总耗时（秒） |
+| `T_M2_optimized` | optimized 模式下 M2 阶段总耗时（秒） |
+| `speedup_M2` | `T_M2_full / T_M2_optimized` |
+| `T_overhead` | R4 缓存查找和 key 计算的额外开销（从 level 耗时差中估算） |
+
+**注意**：M2 耗时的缩减不仅来自调用次数减少，还受并行度影响。当多条序列共享前缀时，线程池中的实际并发任务数减少，可能导致线程利用率下降。因此需要同时记录各层的实际并发任务数。
+
+**查询工作负载**：同 E8a
+
+**输出**：
+- 配对箱线图：T_M2_full vs T_M2_optimized 的分布对比
+- 折线图：横轴 |V_q|，纵轴 speedup_M2
+- 散点图：横轴 dedup_ratio，纵轴 speedup_M2（验证去重率与加速比的相关性）
+
+#### E8c：排序无损性验证
+
+**目的**：严格证明 R1+R4 不改变序列的代价排序。
+
+**方法**：
+
+对每个查询，分别以 full 和 optimized 模式运行 M2，比较：
+
+| 指标 | 说明 |
+|------|------|
+| `rank_correlation` | Spearman 秩相关系数（全序列排序） |
+| `top1_match` | Top-1 序列是否一致（0/1） |
+| `top5_overlap` | Top-5 序列的重叠数（0-5） |
+| `max_score_diff` | 同一序列在两种模式下的最大代价差异 |
+
+**预期**：
+
+- `rank_correlation = 1.0`（精确一致）
+- `top1_match = 100%`
+- `max_score_diff = 0.0`
+
+这是因为 R1 和 R4 都是精确无损的——相同顶点集的诱导子图完全相同，基数估计值必然相同。此实验的意义在于用实际数据**验证实现的正确性**，而非验证理论。
+
+如果出现 `rank_correlation < 1.0` 的情况，说明实现存在 bug，需要排查。
+
+**查询工作负载**：6 数据集 × |V_q| = {4, 8, 12} × 50 查询 = 900 实验点
+
+**输出**：
+- 汇总表：各数据集上的 rank_correlation、top1_match 率
+- 若全部为 1.0，以一句话总结即可；若存在偏差，需详细分析原因
+
+#### E8d：前缀共享度分析
+
+**目的**：分析不同查询图结构下前缀共享的程度，理解 R4 的收益边界。
+
+**方法**：
+
+对每个查询，统计各层的唯一前缀数 $U_k$ 和总序列数 $|\Omega|$，计算：
+
+| 指标 | 说明 |
+|------|------|
+| `sharing_ratio_k` | 第 $k$ 层的共享率 = $1 - U_k / |\Omega|$ |
+| `avg_sharing_ratio` | 所有层的平均共享率 |
+| `max_sharing_level` | 共享率最高的层级 |
+
+**分组维度**：
+
+1. 按查询图规模 |V_q| 分组 — 验证"大图共享更多"的假设
+2. 按查询图拓扑分组 — 区分树形查询（共享少）vs 稠密查询（共享多）
+3. 按 M1 策略分组 — baseline（序列多、共享多）vs pruned（序列少、共享可能更少）
+
+**查询工作负载**：固定 yeast 数据集，|V_q| = {4, 8, 12, 16} × 50 查询
+
+**输出**：
+- 热力图：横轴层级 $k$（0 到 $n-1$），纵轴查询编号，颜色表示 $U_k / |\Omega|$
+- 折线图：横轴 |V_q|，纵轴 avg_sharing_ratio
+- 柱状图：树形查询 vs 稠密查询的 avg_sharing_ratio 对比
+
+#### E8e：端到端收益（M2 去重对 E3 的影响）
+
+**目的**：验证 M2 去重能否缩短端到端总时间，以及与 M1 剪枝的协同效果。
+
+**方法**：对比四条完整流水线：
+
+```
+Pipeline A: M1_baseline + M2_full      → M3(OPT_A)
+Pipeline B: M1_baseline + M2_optimized → M3(OPT_B)
+Pipeline C: M1_pruned   + M2_full      → M3(OPT_C)
+Pipeline D: M1_pruned   + M2_optimized → M3(OPT_D)
+```
+
+记录：
+
+| 指标 | Pipeline A | Pipeline B | Pipeline C | Pipeline D |
+|------|-----------|-----------|-----------|-----------|
+| T_M1 | T_M1_baseline | T_M1_baseline | T_M1_pruned | T_M1_pruned |
+| T_M2 | T_M2_full | T_M2_optimized | T_M2_full | T_M2_optimized |
+| N_cpp_calls | $n \times |\Omega_A|$ | 去重后 | $n \times |\Omega_C|$ | 去重后 |
+| T_M3 | T_M3_A | T_M3_B | T_M3_C | T_M3_D |
+| T_total | 三者之和 | 三者之和 | 三者之和 | 三者之和 |
+
+**关键洞察**：
+
+- Pipeline A → B：单独衡量 M2 去重的收益
+- Pipeline A → C：单独衡量 M1 剪枝的收益
+- Pipeline A → D：两者协同的总收益
+- 协同效应：M1 剪枝减少序列数 $|\Omega|$，M2 去重减少每条序列的冗余调用，两者正交互补
+- 但 M1 剪枝后序列数减少，R4 的缓存命中率可能下降（更少的序列意味着更少的前缀共享机会），需要实验验证
+
+**查询工作负载**：6 数据集 × |V_q| = {8, 12, 16} × 50 查询 = 900 实验点
+
+**输出**：
+- 堆叠柱状图：四条 Pipeline 的 T_M1 + T_M2 + T_M3 分解
+- 加速比矩阵：Pipeline B/C/D 相对于 A 的加速比
+- 折线图：横轴 |V_q|，纵轴各 Pipeline 的 T_total（期望 D 始终最优）
+
+### 8.3 实验执行要点
+
+#### API 调用方式
+
+```python
+import httpx
+
+# Full（baseline）
+resp = httpx.post("http://localhost:8000/api/sessions", json={
+    "dataset_id": "yeast",
+    "query_graph": {...},
+    "prefix_eval_mode": "full",
+})
+
+# Optimized（R1+R4）
+resp = httpx.post("http://localhost:8000/api/sessions", json={
+    "dataset_id": "yeast",
+    "query_graph": {...},
+    "prefix_eval_mode": "optimized",
+})
+```
+
+#### 指标采集
+
+R1 和 R4 的统计信息通过日志采集：
+
+```
+# R1 广播日志
+R1_BROADCAST | level=<n-1> | shared_c_hat=<value> | saved_calls=<|Ω|-1>
+
+# R4 缓存统计日志
+R4_CACHE_STATS | hits=<N> | misses=<N> | total=<N> | hit_rate=<percent>
+
+# 各层耗时日志
+LEVEL_DONE | level=<k>/<n> | elapsed=<ms> | top3_rank=[...]
+```
+
+建议编写日志解析脚本，从 `logs/` 目录中提取上述指标，汇总为 CSV 供分析。
+
+#### 统计要求
+
+- 每组实验至少 50 个查询点
+- 报告均值 ± 标准差
+- E8c 的排序一致性验证不需要统计检验（预期为精确一致）
+- E8b 和 E8e 的耗时比较使用 Wilcoxon 符号秩检验，p < 0.05 视为显著
+- M2 耗时测量：每个查询重复 3 次取中位数（消除缓存预热和系统波动）
+
+### 8.4 预期结果
+
+1. **E8a**：R1 固定节省 $|\Omega| - 1$ 次调用；R4 在 |V_q| ≥ 8 时缓存命中率 > 20%，|V_q| ≥ 16 时 > 40%；总 dedup_ratio 随 |V_q| 增大而增大
+2. **E8b**：M2 加速比在 |V_q| ≥ 8 时 > 1.3×，|V_q| ≥ 16 时 > 1.8×
+3. **E8c**：rank_correlation = 1.0，top1_match = 100%（精确无损）
+4. **E8d**：稠密查询图的 avg_sharing_ratio 显著高于树形查询图；baseline 策略（序列多）的共享率高于 pruned 策略
+5. **E8e**：Pipeline D（M1 剪枝 + M2 去重）的 T_total 始终最优；两项优化的收益近似正交可加
+
+### 8.5 论文叙事整合
+
+E8 的结果与现有实验的关系：
+
+- **E8a + E8b** → "前缀子图去重大幅减少了冗余的 C++ 估计调用，M2 耗时显著降低"
+- **E8c** → "去重是精确无损的，不改变任何序列的代价排序，优化的正确性有严格保证"
+- **E8d** → "前缀共享程度取决于查询图结构和序列数量，为去重收益提供了可解释的分析"
+- **E8e + E7e + E3** → "M1 剪枝和 M2 去重协同作用，使端到端收益的盈亏平衡点进一步提前"
