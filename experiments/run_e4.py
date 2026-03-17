@@ -20,6 +20,7 @@ from experiments.common.graph_loader import discover_queries
 from experiments.common.csv_writer import ExperimentCSV
 from experiments.common.timing import timer
 from experiments.common.m2_runner import run_m2, run_m2_full
+from experiments.common.logger import setup_logger, ErrorCounter
 
 from server.services.estimator_adapter import EstimatorAdapter
 from server.services.score_aggregator import EarlyStopConfig
@@ -39,6 +40,10 @@ def main():
     p = base_argparser("E4: overhead reduction — planning time breakdown")
     p.add_argument("--beam-widths", nargs="+", type=int, default=[10, 25, 50, 100, 200])
     args = p.parse_args()
+
+    log = setup_logger("E4", log_dir=args.output_dir)
+    errors = ErrorCounter()
+    log.info("E4 started — datasets=%s", args.datasets)
 
     adapter = EstimatorAdapter()
 
@@ -92,6 +97,7 @@ def main():
             print(f"  [{ds}] {len(queries)} queries")
 
             for q in queries:
+              try:
                 graph = q["graph"]
 
                 # --- E4 main: baseline vs optimized ---
@@ -172,6 +178,9 @@ def main():
                         m2_time_s=f"{t_r3.elapsed_s:.6f}",
                         best_score=f"{best_sc_r3:.4f}",
                     )
+              except Exception as e:
+                log.error("query %s failed: %s", q["name"], e, exc_info=True)
+                errors.record(dataset=ds, query=q["name"], phase="E4", error=str(e))
 
             print(f"  [{ds}] done")
 
@@ -181,6 +190,7 @@ def main():
         csv_e4b.close()
 
     print(f"Results written to {args.output_dir}")
+    errors.summary(log)
 
 
 if __name__ == "__main__":

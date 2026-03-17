@@ -23,6 +23,7 @@ from experiments.common.csv_writer import ExperimentCSV
 from experiments.common.timing import timer
 from experiments.common.stats import spearman_corr
 from experiments.common.m2_runner import run_m2
+from experiments.common.logger import setup_logger, ErrorCounter
 
 from server.services.estimator_adapter import EstimatorAdapter
 from server.services.score_aggregator import WeightConfig, get_weight
@@ -65,6 +66,10 @@ def main():
     p.add_argument("--max-embeddings", type=int, default=100000)
     p.add_argument("--time-limit", type=int, default=60)
     args = p.parse_args()
+
+    log = setup_logger("E10", log_dir=args.output_dir)
+    errors = ErrorCounter()
+    log.info("E10 started — datasets=%s, grid_only=%s", args.datasets, args.grid_only)
 
     adapter = EstimatorAdapter()
 
@@ -133,6 +138,7 @@ def main():
             print(f"  [{ds}] {len(queries)} queries")
 
             for q in queries:
+              try:
                 graph = q["graph"]
                 orders = generate_orders_pruned(graph)
                 if not orders:
@@ -242,7 +248,7 @@ def main():
                         eps_impr = (wt_eps - uni_eps) / uni_eps if uni_eps > 0 else 0.0
                         time_impr = (uni_time - wt_time) / uni_time if uni_time > 0 else 0.0
                     except Exception as e:
-                        print(f"    M3 failed: {e}")
+                        log.warning("M3 failed for %s: %s", q["name"], e)
                         uni_eps, wt_eps, uni_time, wt_time = 0.0, 0.0, 0.0, 0.0
                         eps_impr, time_impr = 0.0, 0.0
                     finally:
@@ -260,6 +266,9 @@ def main():
                         uniform_time_s=f"{uni_time:.4f}", weighted_time_s=f"{wt_time:.4f}",
                         time_improvement=f"{time_impr:.4f}",
                     )
+              except Exception as e:
+                log.error("query %s failed: %s", q["name"], e, exc_info=True)
+                errors.record(dataset=ds, query=q["name"], phase="E10", error=str(e))
 
             print(f"  [{ds}] done")
 
@@ -270,6 +279,7 @@ def main():
             csv_e10b.close()
 
     print(f"Results written to {args.output_dir}")
+    errors.summary(log)
 
 
 if __name__ == "__main__":

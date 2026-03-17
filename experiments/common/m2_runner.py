@@ -5,6 +5,7 @@ asyncio or SSE, suitable for batch experiment execution.
 """
 from __future__ import annotations
 
+import logging
 import time
 from dataclasses import dataclass, field
 from typing import Any
@@ -19,6 +20,8 @@ from server.services.score_aggregator import (
     ScoreAggregator, WeightConfig, EarlyStopConfig, get_weight,
 )
 from server.services.estimator_adapter import EstimatorAdapter
+
+_log = logging.getLogger("exp.m2_runner")
 
 
 @dataclass
@@ -115,8 +118,12 @@ def run_m2(
                     cache_misses += 1
 
             if c_hat is None:
-                result = adapter.estimate_prefix(prefix)
-                c_hat = result.get("estimated_cardinality", 0.0)
+                try:
+                    result = adapter.estimate_prefix(prefix)
+                    c_hat = result.get("estimated_cardinality", 0.0)
+                except Exception as exc:
+                    _log.debug("C++ estimate failed order=%d level=%d: %s", order_idx, level, exc)
+                    c_hat = 0.0
                 n_cpp_calls += 1
                 if use_r4:
                     prefix_cache[frozenset(orders[order_idx][: level + 1])] = c_hat
@@ -135,8 +142,12 @@ def run_m2(
         level_start = time.perf_counter()
 
         first_prefix = all_prefixes[0][last_level]
-        result = adapter.estimate_prefix(first_prefix)
-        shared_c_hat = result.get("estimated_cardinality", 0.0)
+        try:
+            result = adapter.estimate_prefix(first_prefix)
+            shared_c_hat = result.get("estimated_cardinality", 0.0)
+        except Exception as exc:
+            _log.debug("C++ estimate failed R1 broadcast: %s", exc)
+            shared_c_hat = 0.0
         n_cpp_calls += 1
 
         for order_idx in range(len(orders)):

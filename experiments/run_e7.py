@@ -22,6 +22,7 @@ from experiments.common.graph_loader import discover_queries
 from experiments.common.csv_writer import ExperimentCSV
 from experiments.common.timing import timer
 from experiments.common.stats import spearman_corr, mean_std
+from experiments.common.logger import setup_logger, ErrorCounter
 
 from server.services.order_strategies.baseline import generate_orders_baseline
 from server.services.order_strategies.pruned import generate_orders_pruned
@@ -32,6 +33,10 @@ def main():
     p.add_argument("--no-m2", action="store_true", help="Skip M2 evaluation (E7a only)")
     p.add_argument("--top-k", type=int, default=10, help="Top-K for quality comparison")
     args = p.parse_args()
+
+    log = setup_logger("E7", log_dir=args.output_dir)
+    errors = ErrorCounter()
+    log.info("E7 started — datasets=%s, no_m2=%s", args.datasets, args.no_m2)
 
     # --- E7a CSV: search space reduction ---
     csv_e7a = ExperimentCSV(
@@ -93,6 +98,7 @@ def main():
             print(f"  [{ds}] {len(queries)} queries")
 
             for q in queries:
+              try:
                 graph = q["graph"]
 
                 # --- Baseline M1 ---
@@ -177,6 +183,9 @@ def main():
                         total_speedup=f"{total_speedup:.2f}",
                         n_baseline=n_bl, n_pruned=n_pr,
                     )
+              except Exception as e:
+                log.error("query %s failed: %s", q["name"], e, exc_info=True)
+                errors.record(dataset=ds, query=q["name"], phase="E7", error=str(e))
 
             print(f"  [{ds}] done")
 
@@ -188,6 +197,7 @@ def main():
             csv_e7e.close()
 
     print(f"Results written to {args.output_dir}")
+    errors.summary(log)
 
 
 if __name__ == "__main__":

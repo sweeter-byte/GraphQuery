@@ -17,6 +17,7 @@ from experiments.common.config import base_argparser, DATASET_SIZES, ALL_DATASET
 from experiments.common.graph_loader import discover_queries
 from experiments.common.csv_writer import ExperimentCSV
 from experiments.common.timing import timer
+from experiments.common.logger import setup_logger, ErrorCounter
 
 from server.services.order_strategies.pruned import generate_orders_pruned
 
@@ -31,6 +32,10 @@ def main():
     )
     p.add_argument("--max-orders", type=int, default=500)
     args = p.parse_args()
+
+    log = setup_logger("E7d", log_dir=args.output_dir)
+    errors = ErrorCounter()
+    log.info("E7d started — datasets=%s, cost_factors=%s", args.datasets, args.cost_factors)
 
     csv_out = ExperimentCSV(
         Path(args.output_dir) / "e7d_cost_factor.csv",
@@ -58,6 +63,7 @@ def main():
             print(f"  [{ds}] {len(queries)} queries x {len(args.cost_factors)} cost_factors")
 
             for q in queries:
+              try:
                 graph = q["graph"]
                 for cf in args.cost_factors:
                     with timer() as t:
@@ -69,6 +75,9 @@ def main():
                         query=q["name"], cost_factor=f"{cf:.2f}",
                         n_orders=len(orders), time_s=f"{t.elapsed_s:.6f}",
                     )
+              except Exception as e:
+                log.error("query %s failed: %s", q["name"], e, exc_info=True)
+                errors.record(dataset=ds, query=q["name"], phase="E7d", error=str(e))
 
             print(f"  [{ds}] done")
 
@@ -76,6 +85,7 @@ def main():
         csv_out.close()
 
     print(f"Results written to {args.output_dir}")
+    errors.summary(log)
 
 
 if __name__ == "__main__":

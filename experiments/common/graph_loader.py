@@ -1,6 +1,7 @@
 """Load .graph files and discover query graphs for experiments."""
 from __future__ import annotations
 
+import logging
 import random
 from pathlib import Path
 
@@ -9,6 +10,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from server.models import NormalizedGraph, Vertex, Edge
 from .config import DATASET_ROOT, DATASET_SIZES
+
+_log = logging.getLogger("exp.graph_loader")
 
 
 def load_query_graph(filepath: str | Path) -> NormalizedGraph:
@@ -87,13 +90,18 @@ def discover_queries(
                 files = rng.sample(files, max_per_size)
                 files.sort()
             for fp in files:
+                try:
+                    graph = load_query_graph(fp)
+                except Exception as e:
+                    _log.warning("Failed to load %s: %s", fp, e)
+                    continue
                 results.append({
                     "dataset": dataset_id,
                     "size": sz,
                     "density": den,
                     "name": fp.stem,
                     "path": str(fp),
-                    "graph": load_query_graph(fp),
+                    "graph": graph,
                 })
 
     return results

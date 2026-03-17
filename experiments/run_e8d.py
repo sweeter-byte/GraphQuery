@@ -16,6 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from experiments.common.config import base_argparser, DATASET_SIZES
 from experiments.common.graph_loader import discover_queries
 from experiments.common.csv_writer import ExperimentCSV
+from experiments.common.logger import setup_logger, ErrorCounter
 
 from server.services.order_strategies.pruned import generate_orders_pruned
 from server.services.prefix_builder import build_prefix_subgraphs
@@ -24,6 +25,10 @@ from server.services.prefix_builder import build_prefix_subgraphs
 def main():
     p = base_argparser("E8d: prefix sharing degree analysis")
     args = p.parse_args()
+
+    log = setup_logger("E8d", log_dir=args.output_dir)
+    errors = ErrorCounter()
+    log.info("E8d started — datasets=%s", args.datasets)
 
     csv_out = ExperimentCSV(
         Path(args.output_dir) / "e8d_sharing.csv",
@@ -48,6 +53,7 @@ def main():
             print(f"  [{ds}] {len(queries)} queries")
 
             for q in queries:
+              try:
                 graph = q["graph"]
                 orders = generate_orders_pruned(graph)
                 if not orders:
@@ -76,6 +82,9 @@ def main():
                         total_prefixes=total, unique_prefixes=unique,
                         sharing_ratio=f"{sharing:.4f}",
                     )
+              except Exception as e:
+                log.error("query %s failed: %s", q["name"], e, exc_info=True)
+                errors.record(dataset=ds, query=q["name"], phase="E8d", error=str(e))
 
             print(f"  [{ds}] done")
 
@@ -83,6 +92,7 @@ def main():
         csv_out.close()
 
     print(f"Results written to {args.output_dir}")
+    errors.summary(log)
 
 
 if __name__ == "__main__":

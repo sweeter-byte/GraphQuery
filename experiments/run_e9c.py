@@ -18,6 +18,7 @@ from experiments.common.graph_loader import discover_queries
 from experiments.common.csv_writer import ExperimentCSV
 from experiments.common.timing import timer
 from experiments.common.m2_runner import run_m2
+from experiments.common.logger import setup_logger, ErrorCounter
 
 from server.services.estimator_adapter import EstimatorAdapter
 from server.services.score_aggregator import EarlyStopConfig
@@ -35,6 +36,10 @@ def main():
     )
     p.add_argument("--top-k", type=int, default=10)
     args = p.parse_args()
+
+    log = setup_logger("E9c", log_dir=args.output_dir)
+    errors = ErrorCounter()
+    log.info("E9c started — datasets=%s", args.datasets)
 
     adapter = EstimatorAdapter()
 
@@ -69,6 +74,7 @@ def main():
             print(f"  [{ds}] {len(queries)} queries x {len(args.min_completed_values)} min_completed values")
 
             for q in queries:
+              try:
                 graph = q["graph"]
                 orders = generate_orders_pruned(graph)
                 if not orders:
@@ -117,6 +123,9 @@ def main():
                         top1_match=1 if r3_top1 == base_top1 else 0,
                         topk_overlap=f"{topk_overlap:.4f}",
                     )
+              except Exception as e:
+                log.error("query %s failed: %s", q["name"], e, exc_info=True)
+                errors.record(dataset=ds, query=q["name"], phase="E9c", error=str(e))
 
             print(f"  [{ds}] done")
 
@@ -124,6 +133,7 @@ def main():
         csv_out.close()
 
     print(f"Results written to {args.output_dir}")
+    errors.summary(log)
 
 
 if __name__ == "__main__":

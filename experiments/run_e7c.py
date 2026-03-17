@@ -17,6 +17,7 @@ from experiments.common.config import base_argparser, DATASET_SIZES, ALL_DATASET
 from experiments.common.graph_loader import discover_queries
 from experiments.common.csv_writer import ExperimentCSV
 from experiments.common.timing import timer
+from experiments.common.logger import setup_logger, ErrorCounter
 
 from server.services.order_strategies.pruned import generate_orders_pruned
 
@@ -44,6 +45,10 @@ def main():
     p.add_argument("--max-orders", type=int, default=500)
     args = p.parse_args()
 
+    log = setup_logger("E7c", log_dir=args.output_dir)
+    errors = ErrorCounter()
+    log.info("E7c started — datasets=%s, configs=%s", args.datasets, args.configs)
+
     configs = {k: ABLATION_CONFIGS[k] for k in args.configs if k in ABLATION_CONFIGS}
 
     csv_out = ExperimentCSV(
@@ -69,6 +74,7 @@ def main():
             print(f"  [{ds}] {len(queries)} queries x {len(configs)} configs")
 
             for q in queries:
+              try:
                 graph = q["graph"]
                 for cfg_name, cfg_kwargs in configs.items():
                     with timer() as t:
@@ -80,6 +86,9 @@ def main():
                         query=q["name"], config=cfg_name,
                         n_orders=len(orders), time_s=f"{t.elapsed_s:.6f}",
                     )
+              except Exception as e:
+                log.error("query %s failed: %s", q["name"], e, exc_info=True)
+                errors.record(dataset=ds, query=q["name"], phase="E7c", error=str(e))
 
             print(f"  [{ds}] done")
 
@@ -87,6 +96,7 @@ def main():
         csv_out.close()
 
     print(f"Results written to {args.output_dir}")
+    errors.summary(log)
 
 
 if __name__ == "__main__":

@@ -18,6 +18,7 @@ from experiments.common.config import base_argparser, DATASET_SIZES, DATASET_ROO
 from experiments.common.graph_loader import discover_queries
 from experiments.common.csv_writer import ExperimentCSV
 from experiments.common.m2_runner import run_m2
+from experiments.common.logger import setup_logger, ErrorCounter
 
 from server.services.estimator_adapter import EstimatorAdapter
 from server.services.order_strategies.pruned import generate_orders_pruned
@@ -31,6 +32,10 @@ def main():
     p.add_argument("--max-embeddings", type=int, default=100000)
     p.add_argument("--time-limit", type=int, default=60)
     args = p.parse_args()
+
+    log = setup_logger("E2", log_dir=args.output_dir)
+    errors = ErrorCounter()
+    log.info("E2 started — datasets=%s", args.datasets)
 
     adapter = EstimatorAdapter()
     engine = SurveyEngineAdapter()
@@ -65,6 +70,7 @@ def main():
             print(f"  [{ds}] {len(queries)} queries")
 
             for q in queries:
+              try:
                 graph = q["graph"]
                 orders = generate_orders_pruned(graph)
                 if not orders:
@@ -89,7 +95,7 @@ def main():
                         emb = result.get("embedding_count", 0)
                         total_t = result.get("total_time_seconds", 0.0)
                     except Exception as e:
-                        print(f"    M3 failed for order {oid}: {e}")
+                        log.warning("M3 failed for order %d: %s", oid, e)
                         eps, emb, total_t = 0.0, 0, 0.0
                     m3_results.append({
                         "order_id": oid, "m2_score": entry["score"],
@@ -116,6 +122,9 @@ def main():
                         m2_rank=r["m2_rank"],
                         m3_rank=m3_rank_map[r["order_id"]],
                     )
+              except Exception as e:
+                log.error("query %s failed: %s", q["name"], e, exc_info=True)
+                errors.record(dataset=ds, query=q["name"], phase="E2", error=str(e))
 
             print(f"  [{ds}] done")
 
@@ -123,6 +132,7 @@ def main():
         csv_out.close()
 
     print(f"Results written to {args.output_dir}")
+    errors.summary(log)
 
 
 if __name__ == "__main__":

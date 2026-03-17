@@ -10,6 +10,7 @@ Usage:
 from __future__ import annotations
 
 import os
+import logging
 import random
 import sys
 from pathlib import Path
@@ -21,6 +22,7 @@ from experiments.common.graph_loader import discover_queries
 from experiments.common.csv_writer import ExperimentCSV
 from experiments.common.timing import timer
 from experiments.common.m2_runner import run_m2, run_m2_full
+from experiments.common.logger import setup_logger, ErrorCounter
 
 from server.services.estimator_adapter import EstimatorAdapter
 from server.services.score_aggregator import EarlyStopConfig
@@ -32,6 +34,7 @@ from server.services.survey_engine_adapter import SurveyEngineAdapter
 
 def _run_m3(engine, data_graph_path, query_path, max_emb, time_limit):
     """Execute M3 and return (eps, embeddings, total_time_s)."""
+    log = logging.getLogger("exp.E3")
     try:
         result = engine.execute(
             data_graph_path, query_path,
@@ -42,7 +45,8 @@ def _run_m3(engine, data_graph_path, query_path, max_emb, time_limit):
             result.get("embedding_count", 0),
             result.get("total_time_seconds", 0.0),
         )
-    except Exception:
+    except Exception as e:
+        log.warning("M3 execution failed: %s", e)
         return 0.0, 0, 0.0
 
 
@@ -52,6 +56,10 @@ def main():
     p.add_argument("--time-limit", type=int, default=60)
     p.add_argument("--n-rand", type=int, default=10, help="Random samples for RAND baseline")
     args = p.parse_args()
+
+    log = setup_logger("E3", log_dir=args.output_dir)
+    errors = ErrorCounter()
+    log.info("E3 started — datasets=%s", args.datasets)
 
     adapter = EstimatorAdapter()
     engine = SurveyEngineAdapter()
@@ -99,6 +107,7 @@ def main():
             print(f"  [{ds}] {len(queries)} queries")
 
             for q in queries:
+              try:
                 graph = q["graph"]
 
                 # --- Baseline pipeline: baseline M1 + full M2 ---
@@ -197,6 +206,9 @@ def main():
                     net_benefit_vs_rand=f"{net_vs_rand:.4f}",
                     net_benefit_vs_default=f"{net_vs_default:.4f}",
                 )
+              except Exception as e:
+                log.error("query %s failed: %s", q["name"], e, exc_info=True)
+                errors.record(dataset=ds, query=q["name"], phase="E3", error=str(e))
 
             print(f"  [{ds}] done")
 
@@ -204,6 +216,7 @@ def main():
         csv_out.close()
 
     print(f"Results written to {args.output_dir}")
+    errors.summary(log)
 
 
 if __name__ == "__main__":
