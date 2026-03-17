@@ -130,16 +130,14 @@ def main():
 
                 # E9d: synergy comparison (4 configs)
                 configs = {
-                    "none": {"prefix_eval_mode": "full", "early_stop_config": None},
-                    "R4_only": {"prefix_eval_mode": "optimized", "early_stop_config": None},
-                    "R3_only": {
-                        "prefix_eval_mode": "full",
-                        "early_stop_config": EarlyStopConfig(enabled=True, multiplier=2.0, min_completed=1),
-                    },
-                    "R3+R4": {
-                        "prefix_eval_mode": "optimized",
-                        "early_stop_config": EarlyStopConfig(enabled=True, multiplier=2.0, min_completed=1),
-                    },
+                    "none": {"enable_r1": False, "enable_r4": False,
+                             "early_stop_config": None},
+                    "R4_only": {"enable_r1": False, "enable_r4": True,
+                                "early_stop_config": None},
+                    "R3_only": {"enable_r1": False, "enable_r4": False,
+                                "early_stop_config": EarlyStopConfig(enabled=True, multiplier=2.0, min_completed=1)},
+                    "R3+R4": {"enable_r1": True, "enable_r4": True,
+                              "early_stop_config": EarlyStopConfig(enabled=True, multiplier=2.0, min_completed=1)},
                 }
 
                 for cfg_name, cfg_kwargs in configs.items():

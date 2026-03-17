@@ -169,10 +169,6 @@ def main():
                 worst_eps = worst_r["eps"] if worst_r else 0.0
 
                 opt_time = opt_r["total_time_s"] if opt_r else 0.0
-                rand_avg_time = sum(r["total_time_s"] for r in [_run_m3(engine, data_graph_path, "/dev/null", 1, 1)] * 0) or 0.0
-                # Use rand times already collected
-                rand_times = []
-                # We already have rand_eps but not rand times stored separately
                 # Speedup based on EPS (higher = better)
                 speedup_rand = opt_eps / rand_avg if rand_avg > 0 else float("inf")
                 speedup_default = opt_eps / default_eps if default_eps > 0 else float("inf")
