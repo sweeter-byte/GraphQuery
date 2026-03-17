@@ -41,6 +41,9 @@ def run_m2(
     early_stop_config: EarlyStopConfig | None = None,
     prefix_eval_mode: str = "optimized",
     n_threads: int = 1,
+    *,
+    enable_r1: bool | None = None,
+    enable_r4: bool | None = None,
 ) -> M2Result:
     """Synchronous M2 evaluation loop.
 
@@ -53,9 +56,13 @@ def run_m2(
     early_stop_config : R3 config (None = disabled)
     prefix_eval_mode : "optimized" (R1+R4) or "full" (baseline)
     n_threads : unused placeholder (kept for interface compat)
+    enable_r1 : override R1 (skip-last). None = follow prefix_eval_mode.
+    enable_r4 : override R4 (memoization). None = follow prefix_eval_mode.
     """
     n = graph.num_vertices
     optimized = prefix_eval_mode == "optimized"
+    use_r1 = enable_r1 if enable_r1 is not None else optimized
+    use_r4 = enable_r4 if enable_r4 is not None else optimized
 
     aggregator = ScoreAggregator(
         top_k=len(orders),
@@ -70,8 +77,8 @@ def run_m2(
     # Pre-build all prefix payloads
     all_prefixes = {i: build_prefix_subgraphs(graph, order) for i, order in enumerate(orders)}
 
-    # R1: skip last level if optimized
-    if optimized and n >= 2:
+    # R1: skip last level if enabled
+    if use_r1 and n >= 2:
         eval_levels = list(range(n - 1))
     else:
         eval_levels = list(range(n))
@@ -91,14 +98,14 @@ def run_m2(
         for order_idx in range(len(orders)):
             prefix = all_prefixes[order_idx][level]
 
-            # R3: skip pruned orders
-            if optimized and aggregator.should_skip_order(order_idx):
+            # R3: skip pruned orders (uses aggregator's early_stop_config)
+            if aggregator.should_skip_order(order_idx):
                 r3_skips += 1
                 continue
 
             c_hat: float | None = None
 
-            if optimized:
+            if use_r4:
                 prefix_key = frozenset(orders[order_idx][: level + 1])
                 cached_val = prefix_cache.get(prefix_key)
                 if cached_val is not None:
@@ -111,7 +118,7 @@ def run_m2(
                 result = adapter.estimate_prefix(prefix)
                 c_hat = result.get("estimated_cardinality", 0.0)
                 n_cpp_calls += 1
-                if optimized:
+                if use_r4:
                     prefix_cache[frozenset(orders[order_idx][: level + 1])] = c_hat
 
             aggregator.record_estimate(
@@ -123,7 +130,7 @@ def run_m2(
         per_level_times.append(time.perf_counter() - level_start)
 
     # R1: broadcast last level estimate
-    if optimized and n >= 2:
+    if use_r1 and n >= 2:
         last_level = n - 1
         level_start = time.perf_counter()
 
