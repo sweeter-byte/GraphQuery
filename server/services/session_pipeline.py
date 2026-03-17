@@ -138,26 +138,73 @@ async def run_session_pipeline(
         for i, order in enumerate(orders):
             all_prefixes[i] = build_prefix_subgraphs(graph, order)
 
+        # --- O1 Optimization: Selective Prefix Evaluation ---
+        # R1: Skip last prefix (level n-1) — Q_n is the full query graph,
+        #     identical for all orders. Estimate once and broadcast.
+        # R4: Prefix Memoization — cache by frozenset(vertex_ids) to reuse
+        #     estimates across orders sharing the same prefix subgraph.
+        optimized = getattr(session, "prefix_eval_mode", "optimized") == "optimized"
+
+        # R1: determine which levels to evaluate via C++
+        if optimized and n >= 2:
+            eval_levels = list(range(n - 1))  # skip last level
+        else:
+            eval_levels = list(range(n))
+
+        # R4: memoization cache — key: frozenset of prefix vertex IDs, value: c_hat
+        prefix_cache: dict[frozenset[int], float] = {}
+        cache_hits = 0
+        cache_misses = 0
+
         # Track completed count for progress
         completed_count = 0
-        total_evaluations = n * len(orders)
+        total_evaluations = len(eval_levels) * len(orders)
 
         # Capture the session_id for use in worker threads (contextvars don't
         # propagate to ThreadPoolExecutor threads automatically)
         _sid = session.session_id
 
-        for level in range(n):
+        for level in eval_levels:
             level_start = time.time()
             with ThreadPoolExecutor(max_workers=python_threads) as executor:
                 async def _wait(fut, o_idx):
                     return o_idx, await fut
 
                 wrapped = []
+                # Orders resolved from R4 cache (no C++ call)
+                cached_results: list[tuple[int, float]] = []
+                # R4: within this level, group orders by prefix key to avoid
+                # duplicate submissions. Only the first order per unique key
+                # gets submitted; others wait for the result and reuse it.
+                pending_by_key: dict[frozenset[int], list[int]] = {}
+                # Map: order_idx -> prefix_key (for orders submitted to executor)
+                submitted_keys: dict[int, frozenset[int]] = {}
+
                 for order_idx in range(len(orders)):
                     prefix = all_prefixes[order_idx][level]
 
+                    if optimized:
+                        prefix_key = frozenset(orders[order_idx][:level + 1])
+
+                        # Check cross-level cache first
+                        cached_val = prefix_cache.get(prefix_key)
+                        if cached_val is not None:
+                            cache_hits += 1
+                            cached_results.append((order_idx, cached_val))
+                            continue
+
+                        # Check if another order at this level already claimed this key
+                        if prefix_key in pending_by_key:
+                            cache_hits += 1
+                            pending_by_key[prefix_key].append(order_idx)
+                            continue
+
+                        # First order with this prefix key — submit to executor
+                        cache_misses += 1
+                        pending_by_key[prefix_key] = []
+                        submitted_keys[order_idx] = prefix_key
+
                     def run_estimation(p, threads, order_i, lvl):
-                        # Set session context in this worker thread
                         _tok = set_session_id(_sid)
                         try:
                             t_name = threading.current_thread().name
@@ -204,12 +251,42 @@ async def run_session_pipeline(
                     )
                     wrapped.append(_wait(future, order_idx))
 
-                # Process results incrementally as each order completes
+                # Process cached results first (no C++ call needed)
+                for order_idx, c_hat in cached_results:
+                    completed_count += 1
+                    events = aggregator.record_estimate(order_idx, level, c_hat)
+                    if order_idx < len(session.orders):
+                        session.orders[order_idx].prefix_index = level + 1
+                        session.orders[order_idx].score = aggregator.trackers[order_idx].score
+                        session.orders[order_idx].prefix_estimates.append(c_hat)
+                    await aggregator.push_events(events)
+                    ranking_event = aggregator.build_ranking_event()
+                    await aggregator.push_event(ranking_event)
+                    await asyncio.sleep(0)
+
+                # Process C++ estimation results as they complete
                 for completed_coro in asyncio.as_completed(wrapped):
                     order_idx, result = await completed_coro
                     completed_count += 1
 
                     c_hat = result.get("estimated_cardinality", 0.0)
+
+                    # R4: store in cache and broadcast to waiting orders
+                    if optimized and order_idx in submitted_keys:
+                        pkey = submitted_keys[order_idx]
+                        prefix_cache[pkey] = c_hat
+                        # Broadcast to orders that were waiting on this key
+                        for waiting_idx in pending_by_key.get(pkey, []):
+                            completed_count += 1
+                            w_events = aggregator.record_estimate(waiting_idx, level, c_hat)
+                            if waiting_idx < len(session.orders):
+                                session.orders[waiting_idx].prefix_index = level + 1
+                                session.orders[waiting_idx].score = aggregator.trackers[waiting_idx].score
+                                session.orders[waiting_idx].prefix_estimates.append(c_hat)
+                            await aggregator.push_events(w_events)
+                            ranking_event = aggregator.build_ranking_event()
+                            await aggregator.push_event(ranking_event)
+                            await asyncio.sleep(0)
 
                     # Record in aggregator and get events
                     events = aggregator.record_estimate(order_idx, level, c_hat)
@@ -239,6 +316,66 @@ async def run_session_pipeline(
             est_log.info(
                 "LEVEL_DONE | level=%d/%d | elapsed=%.1fms | top3_rank=[%s]",
                 level + 1, n, level_elapsed, top_3_str,
+            )
+
+        # --- R1: Estimate the last prefix (full query graph) once, broadcast ---
+        if optimized and n >= 2:
+            last_level = n - 1
+            level_start = time.time()
+
+            # All orders share the same Q_n — estimate using the first order's prefix
+            first_prefix = all_prefixes[0][last_level]
+
+            def _estimate_last(p, threads):
+                _tok = set_session_id(_sid)
+                try:
+                    payload_dict = p.to_dict()
+                    payload_dict["omp_threads"] = threads
+                    _fastest_core = getattr(adapter, "_estimator", None)
+                    if _fastest_core is None:
+                        import random
+                        return {"estimated_cardinality": float(random.randint(10, 10000)), "QueryTime": 0.1}
+                    return dict(_fastest_core.estimate_prefix(payload_dict))
+                finally:
+                    clear_session_id(_tok)
+
+            result = await loop.run_in_executor(None, _estimate_last, first_prefix, omp_threads)
+            shared_c_hat = result.get("estimated_cardinality", 0.0)
+
+            est_log.info(
+                "R1_BROADCAST | level=%d | shared_c_hat=%.4f | saved_calls=%d",
+                last_level, shared_c_hat, len(orders) - 1,
+            )
+
+            # Broadcast to all orders
+            for order_idx in range(len(orders)):
+                completed_count += 1
+                events = aggregator.record_estimate(order_idx, last_level, shared_c_hat)
+                if order_idx < len(session.orders):
+                    session.orders[order_idx].prefix_index = last_level + 1
+                    session.orders[order_idx].score = aggregator.trackers[order_idx].score
+                    session.orders[order_idx].prefix_estimates.append(shared_c_hat)
+                await aggregator.push_events(events)
+
+            ranking_event = aggregator.build_ranking_event()
+            await aggregator.push_event(ranking_event)
+            await asyncio.sleep(0)
+
+            level_elapsed = (time.time() - level_start) * 1000
+            top_3 = aggregator.get_top_k()[:3]
+            top_3_str = ", ".join([f"O{t['order_id']}:sc={t['score']:.2f}" for t in top_3])
+            est_log.info(
+                "LEVEL_DONE | level=%d/%d | elapsed=%.1fms | top3_rank=[%s] [R1-broadcast]",
+                n, n, level_elapsed, top_3_str,
+            )
+
+        # Log R4 cache statistics
+        if optimized:
+            total_cache_ops = cache_hits + cache_misses
+            est_log.info(
+                "R4_CACHE_STATS | hits=%d | misses=%d | total=%d | hit_rate=%.1f%%",
+                cache_hits, cache_misses, total_cache_ops,
+                (cache_hits / total_cache_ops * 100) if total_cache_ops > 0 else 0.0,
             )
 
         # --- Step 5: Run downstream execution (optional) ---
