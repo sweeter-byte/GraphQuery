@@ -13,7 +13,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from experiments.common.config import base_argparser, DATASET_SIZES
+from experiments.common.config import base_argparser, DATASET_SIZES, ALL_DATASETS
 from experiments.common.graph_loader import discover_queries
 from experiments.common.csv_writer import ExperimentCSV
 from experiments.common.timing import timer
@@ -36,7 +36,7 @@ ABLATION_CONFIGS = {
 
 
 def main():
-    p = base_argparser("E7c: M1 pruning ablation study")
+    p = base_argparser("E7c: M1 pruning ablation study", default_datasets=ALL_DATASETS)
     p.add_argument(
         "--configs", nargs="+", default=list(ABLATION_CONFIGS.keys()),
         help="Ablation configs to run (default: all)",

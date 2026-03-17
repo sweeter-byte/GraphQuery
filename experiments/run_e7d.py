@@ -13,7 +13,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from experiments.common.config import base_argparser, DATASET_SIZES
+from experiments.common.config import base_argparser, DATASET_SIZES, ALL_DATASETS
 from experiments.common.graph_loader import discover_queries
 from experiments.common.csv_writer import ExperimentCSV
 from experiments.common.timing import timer
@@ -24,7 +24,7 @@ DEFAULT_COST_FACTORS = [1.1, 1.2, 1.5, 2.0, 3.0, 5.0, 10.0, 50.0]
 
 
 def main():
-    p = base_argparser("E7d: cost_factor sensitivity analysis")
+    p = base_argparser("E7d: cost_factor sensitivity analysis", default_datasets=ALL_DATASETS)
     p.add_argument(
         "--cost-factors", nargs="+", type=float, default=DEFAULT_COST_FACTORS,
         help="cost_factor values to sweep",

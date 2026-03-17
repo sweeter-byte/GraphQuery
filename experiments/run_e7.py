@@ -17,7 +17,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from experiments.common.config import base_argparser, DATASET_SIZES, RESULTS_DIR
+from experiments.common.config import base_argparser, DATASET_SIZES, RESULTS_DIR, ALL_DATASETS
 from experiments.common.graph_loader import discover_queries
 from experiments.common.csv_writer import ExperimentCSV
 from experiments.common.timing import timer
@@ -28,7 +28,7 @@ from server.services.order_strategies.pruned import generate_orders_pruned
 
 
 def main():
-    p = base_argparser("E7: M1 pruned order generation experiments")
+    p = base_argparser("E7: M1 pruned order generation experiments", default_datasets=ALL_DATASETS)
     p.add_argument("--no-m2", action="store_true", help="Skip M2 evaluation (E7a only)")
     p.add_argument("--top-k", type=int, default=10, help="Top-K for quality comparison")
     args = p.parse_args()

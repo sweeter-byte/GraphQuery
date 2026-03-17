@@ -8,6 +8,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DATASET_ROOT = PROJECT_ROOT / "dataset"
 RESULTS_DIR = PROJECT_ROOT / "experiments" / "results"
 
+# Only these 3 datasets have local C++ index files; used as default for all experiments.
+# human, youtube, patents are too large for local indexing and excluded from experiments.
 DATASETS_WITH_INDEX = ["yeast", "wordnet", "dblp"]
 
 ALL_DATASETS = ["yeast", "wordnet", "dblp", "human", "youtube", "patents"]
@@ -23,12 +25,14 @@ DATASET_SIZES: dict[str, list[int]] = {
 }
 
 
-def base_argparser(desc: str) -> argparse.ArgumentParser:
+def base_argparser(desc: str, default_datasets: list[str] | None = None) -> argparse.ArgumentParser:
     """Create an ArgumentParser with common experiment CLI flags."""
+    if default_datasets is None:
+        default_datasets = DATASETS_WITH_INDEX
     p = argparse.ArgumentParser(description=desc)
     p.add_argument(
-        "--datasets", nargs="+", default=DATASETS_WITH_INDEX,
-        help="Dataset IDs to run (default: datasets with C++ index)",
+        "--datasets", nargs="+", default=default_datasets,
+        help="Dataset IDs to run (default: %(default)s)",
     )
     p.add_argument(
         "--sizes", nargs="+", type=int, default=None,
