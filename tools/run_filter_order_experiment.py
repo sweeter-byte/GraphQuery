@@ -212,7 +212,7 @@ def discover_datasets(dataset_dir: str) -> list[tuple[str, str]]:
 
 def discover_queries(dataset_dir: str, dataset_name: str) -> list[str]:
     """发现某个数据集下的所有查询图文件。"""
-    query_dir = os.path.join(dataset_dir, dataset_name, "query_graph")
+    query_dir = os.path.join(dataset_dir, dataset_name, "gen_query_graph")
     if not os.path.isdir(query_dir):
         return []
     files = sorted(
