@@ -21,7 +21,7 @@ GENERATOR="$PROJECT_ROOT/tools/query_graph_generator.py"
 DATASET_DIR="$PROJECT_ROOT/dataset"
 
 # ---- 可调参数 ----
-SIZES="${SIZES:-8 12 16 24 32}"
+SIZES="${SIZES:-4 8 10 12 14 16 20 24 32}"
 MODES="${MODES:-dense sparse}"
 COUNT="${COUNT:-200}"
 SEED="${SEED:-42}"

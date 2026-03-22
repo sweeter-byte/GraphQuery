@@ -12,16 +12,24 @@ RESULTS_DIR = PROJECT_ROOT / "experiments" / "results"
 # human, youtube, patents are too large for local indexing and excluded from experiments.
 DATASETS_WITH_INDEX = ["yeast", "wordnet", "dblp"]
 
-ALL_DATASETS = ["yeast", "wordnet", "dblp", "human", "youtube", "patents"]
+ALL_DATASETS = [
+    "yeast", "hprd", "human", "wordnet",
+    "dblp", "youtube", "eu2005", "patents",
+]
+
+# Fine-grained query vertex sizes (9 sizes × 2 densities = 18 groups per dataset)
+DEFAULT_QUERY_SIZES = [4, 8, 10, 12, 14, 16, 20, 24, 32]
 
 # Query vertex sizes per dataset
 DATASET_SIZES: dict[str, list[int]] = {
-    "yeast": [4, 8, 16, 24, 32],
-    "dblp": [4, 8, 16, 24, 32],
-    "youtube": [4, 8, 16, 24, 32],
-    "patents": [4, 8, 16, 24, 32],
-    "wordnet": [4, 8, 12, 16, 20],
-    "human": [4, 8, 12, 16, 20],
+    "yeast": DEFAULT_QUERY_SIZES,
+    "hprd": DEFAULT_QUERY_SIZES,
+    "human": DEFAULT_QUERY_SIZES,
+    "wordnet": DEFAULT_QUERY_SIZES,
+    "dblp": DEFAULT_QUERY_SIZES,
+    "youtube": DEFAULT_QUERY_SIZES,
+    "eu2005": DEFAULT_QUERY_SIZES,
+    "patents": DEFAULT_QUERY_SIZES,
 }
 
 
