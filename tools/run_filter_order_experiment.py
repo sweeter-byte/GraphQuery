@@ -46,11 +46,9 @@ BINARY = (
     / "SubgraphMatching.out"
 )
 
-# 81 种通用 (filter, order) 组合 + 1 种 CECI 专用组合 = 82 种
+# 81 种有效 (filter, order) 组合（排除 CECI）
 VALID_FILTERS = ["LDF", "NLF", "GQL", "TSO", "CFL", "DPiso", "VEQ", "RM", "CaLiG"]
 VALID_ORDERS = ["QSI", "GQL", "TSO", "CFL", "DPiso", "RI", "VF2PP", "VF3", "RM"]
-# CECI 是封闭系统：filter、order、engine 必须同时为 CECI
-CECI_COMBO = ("CECI", "CECI")
 
 # 正则
 RE_QUERY_PLAN = re.compile(r"Query Plan:\s*(.+)")
@@ -110,7 +108,7 @@ def run_single(
         "-q", query_graph,
         "-filter", filter_type,
         "-order", order_type,
-        "-engine", "CECI" if filter_type == "CECI" else "LFTJ",
+        "-engine", "LFTJ",       # engine 不影响 filter-order 结果
         "-num", "1",             # 跳过枚举
         "-time_limit", str(time_limit),
     ]
@@ -274,10 +272,9 @@ def main() -> None:
         if args.query_pattern:
             queries = [q for q in queries if args.query_pattern in os.path.basename(q)]
 
-        combo_count = len(VALID_FILTERS) * len(VALID_ORDERS) + 1  # +1 for CECI
         print(f"  {dataset_name}: {len(queries)} query graphs "
-              f"× {combo_count} combos "
-              f"= {len(queries) * combo_count} tasks")
+              f"× {len(VALID_FILTERS)}×{len(VALID_ORDERS)}={len(VALID_FILTERS)*len(VALID_ORDERS)} combos "
+              f"= {len(queries) * len(VALID_FILTERS) * len(VALID_ORDERS)} tasks")
 
         for qf in queries:
             nv, ne = parse_query_header(qf)
@@ -288,11 +285,6 @@ def main() -> None:
                         dataset_name, data_graph, qf, qbasename,
                         nv, ne, ft, ot, args.time_limit,
                     ))
-            # CECI 封闭组合
-            tasks.append((
-                dataset_name, data_graph, qf, qbasename,
-                nv, ne, CECI_COMBO[0], CECI_COMBO[1], args.time_limit,
-            ))
 
     total = len(tasks)
     print(f"\nTotal tasks: {total}")
