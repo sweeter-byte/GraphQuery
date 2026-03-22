@@ -16,10 +16,10 @@ $$
 
 - $\hat{c}_k$：第 $k$ 个前缀子图的 FaSTest 基数估计值
 - $\omega_k$：权重函数，支持两种模式：
-  - **uniform**：$\omega_k = 1.0$
-  - **weighted**：$\omega_k = \alpha(k) \cdot \beta(Q_k)$
-    - 位置衰减：$\alpha(k) = \left(\frac{n - k + 1}{n}\right)^\gamma$
-    - 拓扑因子：$\beta(Q_k) = 1 + \lambda \cdot \frac{E_k - V_k + 1}{V_k}$
+  - **uniform**： $\omega_k = 1.0$ 
+  - **weighted**： $\omega_k = \alpha(k) \cdot \beta(Q_k)$
+    - 位置衰减： $\alpha(k) = \left(\frac{n - k + 1}{n}\right)^\gamma$
+    - 拓扑因子： $\beta(Q_k) = 1 + \lambda \cdot \frac{E_k - V_k + 1}{V_k}$
 
 **选 score 最低的序列作为最优**。
 
