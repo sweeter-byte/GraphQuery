@@ -1,0 +1,1032 @@
+\documentclass[12pt,a4paper]{article}
+
+% ========== 基础宏包 ==========
+\usepackage[UTF8]{ctex}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{graphicx}
+\usepackage{float}
+\usepackage{hyperref}
+\usepackage{geometry}
+\usepackage{enumitem}
+\usepackage{booktabs}
+\usepackage{listings}
+\usepackage{xcolor}
+
+\geometry{left=2.5cm,right=2.5cm,top=2.5cm,bottom=2.5cm}
+
+\hypersetup{
+  colorlinks=true,
+  linkcolor=blue,
+  citecolor=blue,
+  urlcolor=blue
+}
+
+\lstset{
+  basicstyle=\ttfamily\small,
+  frame=single,
+  breaklines=true,
+  breakatwhitespace=false,
+  columns=fullflexible,
+  backgroundcolor=\color{gray!10},
+  extendedchars=false
+}
+
+% ========== 定理环境 ==========
+\newtheorem{definition}{定义}[section]
+\newtheorem{property}{性质}[section]
+\newtheorem{remark}{注记}[section]
+
+% ========== 文档信息 ==========
+\title{基于前缀子图基数估计的图查询计划优化系统\\——软件设计文档 (SDD)}
+\author{GraphQuery 项目组}
+\date{2026年3月}
+
+\begin{document}
+\maketitle
+\tableofcontents
+\newpage
+
+% ============================================================
+%  第 1 章  引言
+% ============================================================
+\section{引言}
+\label{sec:intro}
+
+\subsection{图查询优化动机}
+
+子图匹配（Subgraph Matching）是图数据管理领域中最基本也是计算代价最高的操作之一。
+给定一个数据图~$G$ 和一个查询图~$Q$，子图匹配需要找出~$G$ 中所有与~$Q$ 同构的子图。
+该问题已被证明为 NP 完全问题，其求解过程中查询顶点的匹配顺序（即\textbf{查询计划}）对执行效率有决定性影响。
+
+\subsection{中间子图基数估计的必要性}
+
+在基于回溯搜索的子图匹配算法中，查询顶点按照某一顺序依次与数据图顶点进行匹配。
+若在扩展的早期步骤产生了大量中间结果，则整体匹配的搜索空间将急剧膨胀。
+因此，对查询计划中每一步对应的\textbf{前缀子图}（prefix subgraph）的匹配基数进行估计，
+可以有效预测不同查询计划的执行代价，从而选择代价最低的计划。
+
+\subsection{FaSTest 基数估计器}
+
+本系统构建于 FaSTest~\cite{fastest2024}（VLDB 2024）之上。
+FaSTest 是一个基于过滤--采样（Filtering-Sampling）方法的子图匹配基数估计器，
+其核心流程包含：
+\begin{enumerate}[label=(\arabic*)]
+  \item \textbf{索引构建阶段}：加载数据图，执行预处理，构建三角形安全（Triangle Safety）和四环安全（Four-cycle Safety）等结构索引；
+  \item \textbf{查询处理阶段}：对给定查询图构建候选空间（Candidate Space），执行过滤和采样，输出基数估计值。
+\end{enumerate}
+
+FaSTest 以命令行工具（CLI）形式提供服务，接受数据集名称与查询文件列表作为输入，输出每个查询的估计基数。
+
+\subsection{系统目标与边界}
+
+本文档所描述的系统将 FaSTest 估计器封装为一个\textbf{交互式图查询计划优化系统}，
+提供以下能力：
+\begin{itemize}
+  \item 数据集管理与离线索引文件的状态报告；
+  \item 查询图的在线输入与验证；
+  \item 连通扩展顺序的确定性生成；
+  \item 前缀子图构建与逐前缀基数估计；
+  \item 通过 SSE 向前端实时推送估计进度；
+  \item 选择最优的连通拓展顺序，并向用户展示；
+  \item 下游接入一个真实的图查询引擎，并按照最优连通拓展顺序执行查询，输出查询结果。
+\end{itemize}
+
+
+% ============================================================
+%  第 2 章  用户需求分析
+% ============================================================
+\section{用户需求分析}
+\subsection{用户界面需求}
+
+\begin{enumerate}[label=\textbf{UI-\arabic*}]
+  \item \textbf{数据集选择器}：展示系统内置数据集列表及其基本统计信息（顶点数、边数、标签集合），
+        并显示每个数据集的索引构建状态（\texttt{ready}、\texttt{missing}、\texttt{unknown}）。
+
+  \item \textbf{查询图输入}：提供可视化编辑器供用户以“画图”的方式定义查询图
+        （包含顶点集合、边集合、顶点标签）。前端接受查询图，向后端发送与之等效的 json 文件。
+
+  \item \textbf{会话提交与状态展示}：用户提交查询后可查看当前会话状态
+        （\texttt{queued}$\to$\texttt{running}$\to$\texttt{completed}$/$\texttt{failed}）。
+
+  \item \textbf{实时进度反馈}：通过 SSE 展示前缀估计过程，包括：
+        \begin{itemize}
+          \item 进度条：已完成前缀数 / 总前缀数；
+          \item 折线图 A：横轴为前缀索引 $k$，纵轴为 $\hat{c}_k$（当前前缀基数估计值）；
+          \item 折线图 B：横轴为前缀索引 $k$，纵轴为 $\mathit{score}$（累计代价）；
+          后续实验时，可能前缀基数估计值相加并非为累计代价，不同位置的前缀基数权重可能不一样。
+          \item KPI 指标牌：最新累计分值。
+        \end{itemize}
+
+  \item \textbf{结果与错误展示}：会话完成后展示最终累计分值和前缀估计明细；
+        若发生错误则展示错误码和描述信息。
+
+  \item \textbf{查询序列展示}: 对最低累计代价的查询序列，向用户动态显示查询过程，与此同时后端接入图查询引擎，返回真实查询值。
+\end{enumerate}
+
+\subsection{系统功能需求}
+
+\begin{enumerate}[label=\textbf{SYS-\arabic*}]
+  \item \textbf{数据集注册与索引检测}：系统维护数据集注册表，自动检测离线索引文件的存在性与合法性。
+
+  \item \textbf{查询图验证}：对用户提交的查询图进行结构验证（格式、连通性、顶点/边完整性），
+        拒绝不合法的查询并返回明确错误信息。
+
+  \item \textbf{顶点 ID 归一化}：将用户提交的任意顶点 ID 映射为连续整数 $0, 1, \dots, n{-}1$，
+        以满足 CLI 文件格式要求。
+
+  \item \textbf{连通扩展顺序生成}：生成查询图$Q$所有的确定性连通扩展顺序集合$S_Q$。
+
+  \item \textbf{前缀子图构建}：根据顺序$s \in S_Q$逐步构建前缀子图$Q_k$（$k=1, \dots, |V(Q)|$），每个前缀子图为查询图$Q$在$s$的前$k$个顶点上的\textbf{诱导子图}。
+  
+  \item \textbf{基数估计与累计代价}：对每个前缀子图调用 FaSTest CLI 进行估计，并累加得分。
+
+  \item \textbf{流式进度推送}：后端通过 SSE 向前端实时推送索引加载、前缀进度、会话完成等事件。
+
+  \item \textbf{并发控制与内存安全}：为阻断多会话或多分支请求期间多次并行拉起 CLI 环境引起大规模索引的 OOM，要求采取常驻核心或动态链接机制，让源结构体成为“内存单例（Singleton）”，以无损并驾齐驱计算流负荷。
+
+  \item \textbf{查询执行}：根据最优连通扩展顺序，调用图查询引擎执行查询，并返回查询结果。
+
+\end{enumerate}
+
+% ============================================================
+%  第 3 章  系统总体架构
+% ============================================================
+
+\section{系统体系结构设计}
+\subsection{架构概述}
+
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=\textwidth]{images/architecture_recommend.png}
+  \caption{系统总体架构示意图}
+  \label{fig:arch}
+\end{figure}
+
+\subsection{各层职责}
+
+\begin{description}
+  \item[前端] 运行在用户浏览器中的单页应用，负责数据集浏览、查询图构建与提交、
+    实时进度渲染（通过 SSE 连接）和结果展示。建议采用 \textbf{React 或 Vue 等现代前端框架，结合 Cytoscape.js 或 D3.js} 等专业可视化库来实现查询图的高级绘制、拓扑动画以及高频状态更新。单纯使用原生 HTML+JS 难以应对复杂的渲染与状态管理。
+
+  \item[后端 API 服务器] 基于 Python 实现的 \textbf{FastAPI} 服务器。选择 FastAPI 是由于其原生的异步（\texttt{async}/\texttt{await}）特性与对流处理（StreamingResponse）的原生支持，极度契合大规模 SSE 推送场景。
+    内部包含以下核心模块：
+    \begin{itemize}
+      \item \textbf{路由层}：处理 HTTP 请求分发，包括数据集路由和会话路由；
+
+      \item \textbf{会话管理器}：维护会话状态机（queued $\to$ running $\to$ completed/failed），
+            协调查询处理流水线；
+
+      \item \textbf{查询处理管线}：包括查询验证、顶点 ID 归一化、连通扩展顺序生成、前缀构建等服务；
+
+      \item \textbf{估计器适配器}：负责将前缀子图等参数转换为 C++ 兼容的结构体或 JSON 格式，通过 \textbf{Pybind11 动态链接库或 IPC 轮询管道}直接与常驻的 C++ 程序通信，实现\textbf{零磁盘 I/O 开销}的极速评估；
+
+      \item \textbf{存储层}：维护数据集注册表和会话记录。
+    \end{itemize}
+
+  \item[估计器内核] 即 FaSTest C++ 程序。通过 \texttt{CMakeLists.txt} 构建，建议通过 \texttt{pybind11} 编译为 Python \texttt{.so} 库，或包装为一个常驻后台 Daemon 进程。这保障了\textbf{超大的源数据图和结构索引在内存中仅需孤立加载一次（Singleton）}。内核负责快速接收后端传来的查询拓扑形态，在单一内存空间执行候选空间挖掘、过滤、采样，并将估算代价流式反馈至 Python 环境。
+\end{description}
+
+% ============================================================
+%  第 4 章  后端系统设计
+% ============================================================
+\section{后端系统设计}
+\label{sec:backend}
+
+后端采用 Python 实现，遵循模块化设计。文件结构如下：
+\begin{lstlisting}
+server/
+  main.py             # FastAPI 应用入口（Uvicorn启动点）
+  routes/
+    datasets.py       # 数据集 API 路由
+    sessions.py       # 会话 API 路由
+  services/
+    prefix_builder.py # 前缀构建服务
+    estimator_adapter.py # 估计器适配层
+  models.py           # 数据模型定义
+  storage.py          # 存储层
+\end{lstlisting}
+
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=\textwidth]{Session-Management.png}
+  \caption{后端模块结构图}
+  \label{fig:backend-modules}
+\end{figure}
+
+\subsection{数据集注册与索引状态检测}
+\label{sec:dataset-registry}
+
+后端维护一个数据集注册表，扫描 \texttt{dataset/} 目录下的子目录。为了保证系统在线查询时的实时性，**数据集的结构化索引构建必须在用户正式使用前（即离线阶段）完成**，并将构建好的索引文件直接存入文档或数据库中供后续加载。
+每个数据集包含以下元信息：
+\begin{itemize}
+  \item \texttt{id}：数据集标识（目录名，如 \texttt{yeast}）；
+  \item \texttt{name}：显示名称；
+  \item \texttt{num\_vertices}、\texttt{num\_edges}：从 \texttt{.graph} 文件首行解析；
+  \item \texttt{labels}：标签集合；
+  \item \texttt{index\_status}：索引状态枚举值，取值为 \texttt{ready}（已离线构建完毕可直接加载）、\texttt{missing} 或 \texttt{unknown}；
+  \item \texttt{index\_artifact\_path}：索引文件目录路径；
+  \item \texttt{index\_version}、\texttt{index\_built\_at}：索引版本与构建时间戳；
+  \item \texttt{index\_summary}：索引摘要信息。
+\end{itemize}
+
+索引状态检测流程：
+\begin{enumerate}
+  \item 检查 \texttt{dataset/<name>/index/meta.json} 是否存在于后端数据库或预设挂载目录中；
+  \item 解析元数据并验证必需字段与类型；
+  \item 计算 \texttt{<name>.graph} 的 SHA-256 哈希并与 \texttt{dataset\_hash} 比对；
+  \item 验证请求的结构模式目录是否存在且完整；
+  \item 所有检查通过则状态标记为 \texttt{ready}，意味着可以立即服务；文件缺失则为 \texttt{missing}；
+        哈希不匹配则为 \texttt{stale}；其他异常则为 \texttt{unknown}。
+\end{enumerate}
+
+\subsection{会话管理器：状态机}
+\label{sec:session-manager}
+
+每个查询会话（Session）经历以下状态转换：
+
+\begin{center}
+  \texttt{queued} $\longrightarrow$ \texttt{running} $\longrightarrow$
+  \texttt{completed} $\mid$ \texttt{failed}
+\end{center}
+
+会话对象包含：会话 ID、数据集 ID、查询图、归一化映射、
+生成的顺序、各前缀估计结果、累计分值、状态与时间戳。
+
+\subsection{查询验证与 ID 归一化}
+\label{sec:query-validation}
+
+收到查询图后，后端执行以下步骤：
+
+\begin{enumerate}
+  \item \textbf{格式验证}：检查 JSON 结构是否完整（\texttt{vertices}、\texttt{edges} 字段存在且非空），
+        每个顶点包含 \texttt{id} 和 \texttt{label}，每条边包含 \texttt{source}、\texttt{target}。
+
+  \item \textbf{连通性验证}：在无向图语义下验证查询图是否连通。
+        本系统目前仅支持无向图处理，暂不支持有向图语义。
+
+  \item \textbf{顶点 ID 归一化}：
+        \begin{enumerate}
+          \item 收集所有原始顶点 ID 并升序排序；
+          \item 构建映射 $\mathit{old\_id} \to \mathit{new\_id}$，其中
+                $\mathit{new\_id} \in \{0, 1, \dots, n{-}1\}$；
+          \item 重写顶点和边中的 ID；
+          \item 验证每条边的端点均存在于映射中。
+        \end{enumerate}
+        
+  \item \textbf{保存映射}：将 \texttt{vertex\_id\_mapping}（原始 ID $\leftrightarrow$ 归一化 ID）
+        写入会话元数据，以便前端可追溯原始 ID。
+\end{enumerate}
+
+\subsection{顺序枚举与生成引擎}
+
+后端生成查询图$Q$所有的确定性连通扩展顺序（详见第~\ref{sec:formal-order} 节的形式化定义）。
+
+\label{sec:order-enumeration}
+
+受到生成全量连通扩展顺序空间 $\Omega(Q)$ $O(n!)$ 爆炸风险的约束，同时也为兼顾前端所需实时的“多分支赛马推理视图表现力”与评测时对数学模型全覆盖的严谨性需求，系统设计为支持**双路由生成引擎（Dual Generation Engines）**架构：
+
+\begin{enumerate}
+  \item \textbf{穷举模式（Exact Level-wise BFS / DFS）}：当查询图规模 $|V| \le k$（系统可配置，例如 $k=7$）时启用，或者将束宽 $b$ 设为 $\infty$。该模式能够罗列出绝对完整的 $\Omega(Q)$ 排列空间结构，并找到数学意义上毫无误差的全局最优解 $O^*$，确保基线评测的绝对正确性。
+  \item \textbf{启发式束搜索（Heuristic Beam Search）}：当系统面对更大规模拓扑或前端请求多线实时反馈动画时启用。通过设置有限的束宽参数 $b$（如 $b=50$），利用宽度切割在层级衍生（Level-wise Evolution）过程中动态舍弃部分劣势分叉。此模式致力于寻找“近似最利解”，有力地保障了极其庞大数据下系统的响应时间与内存开销恒定在多项式级别 $O(b \times |V|)$。
+\end{enumerate}
+
+其中启发式束控制搜索（即 Level-wise BFS 的带修剪变体）的具体策略特征为：
+\begin{itemize}
+  \item 长期维系一条评估存活队列，状态包络部分顺序 $P=(v_1,\dots,v_t)$ 和对应被占节点集 $S_t$；
+  \item \textbf{单步按层推进（Level-wise Evolution）}：当评估第 $k$ 阶段，所有在上阶段幸存队伍同时扩充一次疆界边缘节点，计算生成新的局部评估体系。
+  \item \textbf{宽幅束控收紧（Beam Restricting）}：当处于启发式模式时，当完成该层统算洗牌之后，按新分支合计总损耗（$\mathrm{score}$）动态截降末尾群体，严格限配 Top-$b$ 分支延续进入 $k+1$ 的生命阶梯。
+  \item 此时算法能保证横断面上，前端始终能在固定的“步高”阶跃平移阶段接受并行排名信息更迭，而非 DFS 下在单链死磕引发前端时许图“空洞期现象”。
+\end{itemize}
+
+\subsection{前缀构建器}
+\label{sec:prefix-builder}
+
+给定顺序 $O = (v_1, v_2, \dots, v_n)$，前缀构建器按如下步骤生成 $n$ 个前缀子图：
+
+\begin{enumerate}
+  \item 初始化顶点集 $S = \emptyset$；
+  \item 对 $k = 1, 2, \dots, n$：
+        \begin{enumerate}
+          \item $S \gets S \cup \{v_k\}$；
+          \item 计算边集 $E_k = \{(u, w) \in E_Q \mid u \in S \wedge w \in S\}$；
+          \item 验证 $(S, E_k)$ 在无向图语义下连通（此性质由连通扩展顺序保证）；
+          \item 输出前缀子图 $Q_k = (S, E_k, \ell_V|_S, \ell_E|_{E_k})$。
+        \end{enumerate}
+\end{enumerate}
+
+每个前缀子图在内存中直接表示为抽象的数据协议体（如 Python Dictionary 或 Pydantic BaseModel），不再将其序列化并落盘为物理的 \texttt{.graph} 文件，这能彻底规避多顺序评估时大规模文件并发现象引发的 I/O 枯竭死锁状况。
+
+\subsection{估计器适配器}
+\label{sec:estimator-adapter}
+
+估计器适配器负责在 Python 后端体系与高性能的 C++ FaSTest 内存驻留模块间进行无损、无盘化数据桥接，包含以下子组件：
+
+\begin{description}
+  \item[\texttt{query\_payload\_builder}] 将前缀子图对象（$Q_k$）序列化为统一的 JSON Payload 或供 C++ 环境调用的紧凑字典结构，使用归一化后的连续顶点 ID 以保障格式契合标准。
+
+  \item[\texttt{fastest\_ipc\_client} / \texttt{pybind\_wrapper}] 核心通信链路。若是进程间机制（IPC），模块将负责借助轻量级 Socket 连接或持续的 \texttt{stdin/stdout} 管道与长存活期后台守护容器 \texttt{fastest\_daemon} 实施毫秒级数据帧交互；若是 \texttt{pybind11} 模式，更是能在统一内存中枢直接回调 C++ 底层暴露接口 \texttt{fastest\_core.evaluate(query)}。
+
+  \item[\texttt{estimation\_event\_mapper}] 接管解析内核返回的即时数值 $\hat{c}_k$，将其平滑映射为规范的 SSE 事件载荷序列，内部嵌入 \texttt{prefix\_index}、\texttt{estimated\_cardinality}、\texttt{accumulated\_score} 等关联项。
+\end{description}
+
+调度策略：由于内存访问近乎极速，系统可以将各独立前缀评价粒度精确布控于数百毫秒阈值内（如 500ms），总会话兜底设置上限。出现管道破裂、核心级异常或是严重超时现象，模块会强行接管标记会话转为 \texttt{failed} 状态，广播终端灾难事件 \texttt{session\_failed}。这种设计从物理底层彻底遏制了会话退出时的“查询文件垃圾回收”困局。
+
+\subsection{多顺序调度器与估计任务池}
+\label{sec:multi-order-scheduler}
+
+调度器负责在顺序级和前缀级两层分发任务：
+\begin{itemize}
+  \item 顺序任务队列：存放待评估顺序及其执行上下文；
+  \item 前缀任务队列：存放可执行的 $\mathrm{Est}(Q_k^{(O)})$ 任务；
+  \item 工作线程池：并行执行 CLI 调用或批处理调用；
+  \item 回压机制：当 SSE 客户端处理滞后或内存高水位时降低调度速率。
+\end{itemize}
+
+使用的数据结构：
+\begin{itemize}
+  \item \texttt{order\_state[order\_id]}：记录当前前缀索引、部分分值、状态；
+  \item \texttt{ready\_heap}：按优先级（如潜在最优性）调度待执行顺序；
+  \item \texttt{topk\_heap}：维护当前 Top-$k$。
+\end{itemize}
+
+\subsection{分值聚合与实时排名模块}
+\label{sec:score-ranking}
+
+Score Aggregator 在收到前缀估计结果后执行：
+\[
+\mathrm{score}_t(O) = \sum_{k=1}^{t} \omega_k \cdot \hat{c}^{(O)}_k
+\]
+其中 $\omega_k$ 为各前缀阶数的权重系数（目前暂设为 1，后续根据实验结果动态调整）。并将增量更新推送给 Ranking Module。Ranking Module 负责：
+\begin{itemize}
+  \item 维护当前全局最小分值顺序；
+  \item 维护 Top-$k$ 有序列表与变更集（delta）；
+  \item 触发 \texttt{ranking\_updated} 事件，包含 rank 变化信息。
+\end{itemize}
+
+\subsection{执行适配器}
+\label{sec:execution-adapter}
+
+系统在确定最优连通扩展顺序 $O^*$ 后，通过执行适配器将其提交至下游图查询引擎：
+\begin{enumerate}
+  \item 将 $O^*$ 作为查询计划传递给图查询引擎；
+  \item 引擎按照 $O^*$ 指定的顶点扩展顺序执行子图匹配；
+  \item 收集并返回匹配结果（匹配数、匹配实例、执行耗时等）。
+\end{enumerate}
+
+
+% ============================================================
+%  第 5 章  前端系统设计 (Frontend System Design)
+% ============================================================
+\section{前端系统设计}
+\label{sec:frontend}
+
+\subsection{数据集选择器}
+
+前端在加载时调用 \texttt{GET /api/datasets} 获取数据集列表。
+每个数据集展示以下信息：
+\begin{itemize}
+  \item 数据集名称（如 \texttt{yeast}、\texttt{wordnet}）；
+  \item 基本统计信息：顶点数 $|V|$、边数 $|E|$、标签集合；
+  \item 索引状态：\texttt{ready}（就绪）、\texttt{missing}（缺失）或 \texttt{unknown}（未知）；
+  \item 索引版本号与构建时间。
+\end{itemize}
+
+用户选择数据集后，前端记录 \texttt{dataset\_id} 供后续会话提交使用。
+若索引状态为 \texttt{missing}，前端应向用户显示警告提示。
+
+\subsection{查询图可视化编辑器}
+
+前端提供基于画布的可视化查询图编辑器，用户通过图形化交互方式设计查询图：
+
+\begin{itemize}
+  \item \textbf{顶点}：以圆圈表示，用户可在画布上点击添加顶点，
+        圆圈内部显示并可编辑顶点标签（label）；
+  \item \textbf{边}：以线条表示，用户通过拖拽方式在两个顶点之间创建连接，
+        边标签默认为 $0$，可点击修改；
+  \item \textbf{编辑操作}：支持顶点拖拽移动、删除顶点/边、修改标签等基本交互；
+  \item \textbf{实时预览}：编辑过程中实时显示当前查询图的顶点数、边数等统计信息。
+\end{itemize}
+
+用户完成查询图设计后，前端将图形化表示自动序列化为如下 JSON 格式，
+提交至后端进行处理：
+\begin{lstlisting}
+{
+  "vertices": [
+    {"id": 0, "label": 1},
+    {"id": 1, "label": 1},
+    {"id": 2, "label": 2}
+  ],
+  "edges": [
+    {"id": 0, "source": 0, "target": 1, "label": 0},
+    {"id": 1, "source": 1, "target": 2, "label": 0}
+  ]
+}
+\end{lstlisting}
+
+前端在提交前执行基本校验（如顶点标签是否已填写、是否存在孤立顶点等）。
+更严格的语义校验（如连通性检查、标签合法性验证）由后端完成。
+
+\subsection{会话提交与状态展示}
+
+用户点击"提交"按钮后，前端调用 \texttt{POST /api/sessions} 提交查询。
+成功后获得 \texttt{session\_id} 和 \texttt{stream\_url}，
+前端随即建立 SSE 连接监听进度事件。
+
+会话状态以状态标签展示，状态包括：
+\texttt{queued}（排队中）、\texttt{running}（运行中）、
+\texttt{completed}（已完成）、\texttt{failed}（已失败）。
+
+\subsection{SSE 进度展示}
+
+前端监听以下 SSE 事件类型并更新 UI：
+\begin{description}
+  \item[\texttt{index\_loading}] 显示"索引加载中"状态；
+  \item[\texttt{index\_loaded}] 显示"索引加载完成"，展示索引版本；
+  \item[\texttt{session\_started}] 更新状态为"运行中"；
+  \item[\texttt{prefix\_progress}] 更新进度条、折线图与累计分值：
+    \begin{itemize}
+      \item 进度条更新已完成前缀比例；
+      \item 折线图 A 追加数据点 $(k, \hat{c}_k)$；
+      \item 折线图 B 追加数据点 $(k, \mathit{score})$；
+      \item KPI 数值更新为最新 $\mathit{score}$；
+    \end{itemize}
+  \item[\texttt{session\_completed}] 标记会话完成，展示最终累计分值，启用"执行"按钮；
+  \item[\texttt{session\_failed}] 标记会话失败，显示错误信息，禁用进一步操作。
+\end{description}
+
+\subsection{结果与执行展示}
+
+会话完成后，用户可点击"执行查询"按钮触发 \texttt{POST /api/sessions/\{id\}/execute}。
+执行结果通过 \texttt{GET /api/sessions/\{id\}/result} 获取并展示，
+包括选定顺序、执行耗时和匹配计数。
+
+\subsection{顺序列表面板与实时排序}
+
+前端"顺序排行榜"面板，按累计分值从小到大展示候选顺序：
+\begin{itemize}
+  \item 列字段包括：\texttt{order\_id}、顺序向量 $O$、已评估前缀数、当前 $\mathrm{score}$、更新时间戳；
+  \item 支持固定 Top-$k$ 视图与全量滚动视图；
+  \item 当收到 \texttt{ranking\_updated} 事件时，仅对变化项做增量重排，避免全表重绘。
+\end{itemize}
+
+\subsection{动态排名动画与前缀扩展可视化}
+
+为提升可解释性，前端应提供：
+\begin{itemize}
+  \item \textbf{排名跃迁动画}：对进入/离开 Top-$k$ 的顺序进行高亮；
+  \item \textbf{前缀扩展轨迹}：按 $k=1\ldots n$ 展示当前顺序的顶点加入过程；
+  \item \textbf{多顺序对比视图}：并排展示候选顺序在同一前缀深度下的估计差异。
+\end{itemize}
+
+\subsection{执行回放与结果呈现}
+
+前端设置执行回放区，展示最优顺序 $O^*$ 的计划物化与执行过程：
+\begin{itemize}
+  \item 计划下发（\texttt{execution\_started}）；
+  \item 阶段性执行进度与资源指标；
+  \item 执行结束（\texttt{execution\_completed}）与结果摘要；
+  \item 结果明细分页或流式加载（大结果集）。
+\end{itemize}
+
+\subsection{UI 状态转换}
+
+完整 UI 状态机可表示为：
+\[
+\texttt{idle} \rightarrow \texttt{submitted} \rightarrow \texttt{enumerating}
+\rightarrow \texttt{ranking} \rightarrow \texttt{best\_selected}
+\rightarrow \texttt{executing} \rightarrow \texttt{completed/failed}
+\]
+
+其中：
+\begin{itemize}
+  \item 系统完整走完从枚举到执行的全链路；
+  \item 任一状态均可因错误转入 \texttt{failed}，并保留可恢复上下文（会话 ID、最近事件 ID）。
+\end{itemize}
+
+% ============================================================
+%  第 6 章  通信协议设计
+% ============================================================
+\section{通信协议设计}
+\label{sec:communication}
+
+系统采用 \textbf{HTTP REST + SSE} 的混合通信模式。
+
+\subsection{REST API 端点}
+
+\begin{table}[H]
+\centering
+\caption{REST API 端点一览}
+\label{tab:api}
+\begin{tabular}{lllp{5cm}}
+\toprule
+\textbf{方法} & \textbf{路径} & \textbf{成功码} & \textbf{说明} \\
+\midrule
+GET  & \texttt{/api/datasets}           & 200 & 返回数据集列表 \\
+GET  & \texttt{/api/datasets/\{id\}}    & 200 & 返回单个数据集详情 \\
+POST & \texttt{/api/sessions}           & 202 & 创建查询会话 \\
+GET  & \texttt{/api/sessions/\{id\}}    & 200 & 查询会话状态 \\
+GET  & \texttt{/api/sessions/\{id\}/stream} & --- & SSE 流（详见下节）\\
+POST & \texttt{/api/sessions/\{id\}/execute} & 202 & 提交最优顺序至图查询引擎执行 \\
+GET  & \texttt{/api/sessions/\{id\}/result}  & 200 & 获取最终查询结果与统计信息 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+关键错误码：
+\begin{itemize}
+  \item 400：JSON 格式错误；
+  \item 404：资源不存在（数据集或会话）；
+  \item 409：并发限制（\texttt{SESSION\_CAPACITY\_REACHED}）或会话状态冲突；
+  \item 422：查询图验证失败（如不连通、字段缺失）。
+\end{itemize}
+
+错误响应格式统一为：
+\begin{lstlisting}
+{
+  "error": {
+    "code": "<ERROR_CODE>",
+    "message": 
+      "<可读描述>",
+    "details": {}
+  },
+  "request_id": 
+    "<请求追踪 ID>"
+}
+\end{lstlisting}
+
+\subsection{SSE 与 WebSocket 选型}
+
+系统默认采用 SSE，原因如下：
+\begin{itemize}
+  \item 服务端单向推送为主，协议语义简单；
+  \item 与 HTTP 基础设施兼容性高，易于接入网关与负载均衡；
+  \item 前端实现成本低，适合排行榜与进度事件流。
+\end{itemize}
+
+当出现以下需求时可升级为 WebSocket：
+\begin{itemize}
+  \item 高频双向控制（如前端主动调整调度参数）；
+  \item 大规模并发连接且需要更细粒度流控；
+  \item 同一连接复用多类交互通道。
+\end{itemize}
+
+\subsection{SSE 流式端点}
+
+SSE 端点 \texttt{GET /api/sessions/\{id\}/stream} 向客户端推送以下完整事件流：
+
+\begin{enumerate}
+  \item \texttt{index\_loading}：索引开始加载；
+  \item \texttt{index\_loaded}：索引加载完成，携带索引版本信息；
+  \item \texttt{session\_started}：会话正式开始执行；
+  \item \texttt{order\_generated}：产生新的有效顺序；
+  \item \texttt{prefix\_progress} / \texttt{prefix\_estimated}：完成某顺序下的前缀估计，携带
+        \texttt{prefix\_index}、\texttt{estimated\_cardinality}、\texttt{accumulated\_score} 
+        等字段；
+  \item \texttt{score\_updated}：某顺序累计分值更新；
+  \item \texttt{ranking\_updated}：全局排名发生变化；
+  \item \texttt{best\_order\_selected}：当前最优顺序变更或最终确定；
+  \item \texttt{execution\_started}：下游真实查询执行已启动；
+  \item \texttt{execution\_completed}：下游查询完成并返回结果摘要；
+  \item \texttt{session\_completed} 或 \texttt{session\_failed}：终端事件。
+\end{enumerate}
+
+\textbf{事件更新防抖与平滑批处理}：
+为避免高频更新事件导致前端渲染性能瓶颈（如 React 频繁重绘），后端的 Score Aggregator 引入了 $50-100\mathrm{ms}$ 的短时缓冲窗口，采用批处理（Batching）机制将即时高频信号聚合成数组的形式流出，从而平滑 SSE 事件流的推送速率，平衡了算力侧迅猛产出与接收端绘制限度的矛盾。
+
+\subsection{系统交互时序与通信保障}
+\label{sec:interaction-assurance}
+
+本节详述前后端与内核之间的交互时序，并明确事件流语义与可靠性保障策略。
+
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=\textwidth]{API-Session-Stream.png}
+  \caption{前后端交互时序图}
+  \label{fig:sequence}
+\end{figure}
+
+\subsubsection{事件流语义与可靠性保证}
+
+后端通过 SSE 推送的事件流遵循以下核心规则：
+
+\begin{itemize}
+  \item \textbf{顺序性保证}：对于单一顺序的估计，\texttt{prefix\_progress} 事件按前缀索引严格递增顺序推送；全局排名事件按计算完成时间先后推送。
+  \item \textbf{状态确定性}：终端事件（\texttt{session\_completed} 或 \texttt{session\_failed}）之后不再发送任何后续事件，会话状态随之锁定。
+  \item \textbf{断线重连策略}：客户端若发生 SSE 连接中断，应立即尝试重新连接。系统支持通过 \texttt{GET /api/sessions/\{id\}} 接口获取当前会话的最新聚合快照，以弥补断线期间丢失的增量事件。
+  \item \textbf{异常处理}：若 CLI 内核因资源限制或超时非零退出，后端将发送 \texttt{session\_failed} 终端事件并记录详细错误原因。
+\end{itemize}
+
+% ============================================================
+%  第 7 章  端到端系统数据流
+% ============================================================
+\section{端到端系统数据流}
+\label{sec:dataflow}
+
+本节描述从用户发起查询到获取结果的完整端到端数据流，并明确每一步的责任模块。
+
+\subsection{步骤一：数据集选择}
+\begin{description}
+  \item[责任模块] 前端 $\to$ \texttt{routes/datasets.py} $\to$ 存储层
+  \item[操作] 前端调用 \texttt{GET /api/datasets}，后端从注册表返回数据集列表。
+        用户选择一个数据集。
+\end{description}
+
+\subsection{步骤二：索引就绪检查}
+\begin{description}
+  \item[责任模块] 存储层（索引状态检测逻辑）
+  \item[操作] 后端根据 \texttt{dataset/<name>/index/meta.json} 的存在性和内容验证索引状态。
+        前端展示索引状态信息。
+\end{description}
+
+\subsection{步骤三：查询图提交}
+\begin{description}
+  \item[责任模块] 前端 $\to$ \texttt{routes/sessions.py}
+  \item[操作] 前端将 \texttt{dataset\_id} 和 \texttt{query\_graph} JSON 发送至
+        \texttt{POST /api/sessions}。后端创建会话对象，状态初始化为 \texttt{queued}。
+\end{description}
+
+\subsection{步骤四：查询验证与归一化}
+\begin{description}
+  \item[责任模块] 会话管理器 $\to$ 查询验证器 $\to$ ID 归一化器
+  \item[操作] 验证查询图格式与连通性；将顶点 ID 映射为连续整数 $\{0, \dots, n{-}1\}$；
+        保存映射关系至会话元数据。
+\end{description}
+
+\subsection{步骤五：索引加载}
+\begin{description}
+  \item[责任模块] 会话管理器 $\to$ SSE 端点
+  \item[操作] 检查索引文件合法性。发送 \texttt{index\_loading} 和 \texttt{index\_loaded}
+        事件（粗粒度，不含精细进度）。若索引不可用，发送终端失败事件。
+\end{description}
+
+\subsection{步骤六：生成连通扩展顺序}
+\begin{description}
+  \item[责任模块] 顺序生成器
+  \item[操作] 基于归一化后的查询图，按前文所述算法给出查询图$Q$所有的确定性连通扩展顺序集合 $\mathcal{O}$。
+        将顺序写入会话对象。
+\end{description}
+
+\subsection{步骤七：构建前缀子图}
+\begin{description}
+  \item[责任模块] \texttt{prefix\_builder.py}
+  \item[操作] 按顺序集合 $\mathcal{O}$ 中的顺序 $O = (v_1, v_2, \dots, v_n)$ 逐步构建 $n$ 个前缀子图 $Q_1, Q_2, \dots, Q_n$。
+        正如前文所述，每个前缀子图在内存中直接表示为抽象的数据协议体，以常驻内存或动态链接的方式传递给估计器处理，不再将其序列化并落盘为物理的 \texttt{.graph} 文件，从而规避并行请求下的磁盘 I/O 开销与文件冲突问题。
+\end{description}
+
+\subsection{步骤八：调用 CLI 估计器}
+\begin{description}
+  \item[责任模块] \texttt{estimator\_adapter.py}
+  \item[操作] 启动 FaSTest CLI 子进程，传入数据集名称和查询列表文件路径。
+        CLI 依次处理每个前缀子图，输出估计结果。适配器逐行解析标准输出，提取
+        $\hat{c}_k$ 值。
+\end{description}
+
+\subsection{步骤九：累计代价计算与事件推送}
+\begin{description}
+  \item[责任模块] \texttt{estimation\_event\_mapper} $\to$ SSE 端点
+  \item[操作] 每获得一个前缀估计值 $\hat{c}_k$，计算累计代价
+        $\mathit{score}$(具体公式见前文)。
+        通过 SSE 推送 \texttt{prefix\_progress} 事件。
+\end{description}
+
+\subsection{步骤十：会话完成与结果获取}
+\begin{description}
+  \item[责任模块] 会话管理器 $\to$ SSE 端点 $\to$ 存储层
+  \item[操作] 所有前缀处理完毕后，推送 \texttt{session\_completed} 事件。
+        会话状态更新为 \texttt{completed}。
+        前端通过 \texttt{GET /api/sessions/\{id\}/result} 获取完整结果。
+\end{description}
+
+\subsection{步骤十一：实时排序与最优顺序确定}
+\begin{description}
+  \item[责任模块] Score Aggregator $\to$ Ranking Module
+  \item[操作] 增量更新各顺序累计分值，维护 Top-$k$ 与全局最优顺序。
+        当最优顺序发生变化时发送 \texttt{best\_order\_selected} 事件。
+        所有顺序评估完成后，确定最终最优顺序 $O^*$。
+\end{description}
+
+\subsection{步骤十二：下游真实查询执行}
+\begin{description}
+  \item[责任模块] Execution Adapter $\to$ 图查询引擎
+  \item[操作] 用户触发 \texttt{POST /api/sessions/\{id\}/execute}，
+        后端将最优顺序 $O^*$ 提交至图查询引擎执行真实子图匹配。
+        发送 \texttt{execution\_started} / \texttt{execution\_completed} 事件。
+        仅在会话状态为 \texttt{completed} 时允许执行，否则返回 409。
+\end{description}
+
+\subsection{步骤十三：结果返回与展示}
+\begin{description}
+  \item[责任模块] 前端 $\to$ \texttt{routes/sessions.py}
+  \item[操作] 前端通过 \texttt{GET /api/sessions/\{id\}/result} 获取最终查询结果，
+        包括匹配数、匹配实例、执行耗时等统计信息，并向用户展示。
+\end{description}
+
+% ============================================================
+%  第 8 章  核心算法与形式化定义
+% ============================================================
+\section{核心算法与形式化定义}
+\label{sec:formal}
+
+本节给出系统核心概念的严格数学定义。
+
+\subsection{查询图}
+\label{sec:formal-query-graph}
+
+\begin{definition}[查询图]
+\label{def:query-graph}
+一个\textbf{查询图}定义为四元组
+\[
+  Q = (V_Q,\; E_Q,\; \ell_V,\; \ell_E)
+\]
+其中：
+\begin{itemize}
+  \item $V_Q = \{v_0, v_1, \dots, v_{n-1}\}$ 是\textbf{顶点集合}，$n = |V_Q|$；
+  \item $E_Q \subseteq \binom{V_Q}{2}$ 是\textbf{无向边集合}，$m = |E_Q|$；
+  \item $\ell_V: V_Q \to \Sigma_V$ 是\textbf{顶点标签函数}，将每个顶点映射到标签字母表 $\Sigma_V$；
+  \item $\ell_E: E_Q \to \Sigma_E$ 是\textbf{边标签函数}，将每条边映射到标签字母表 $\Sigma_E$。
+        若未指定边标签，默认取值为 $0$。
+\end{itemize}
+\end{definition}
+
+\begin{property}[连通性要求]
+系统要求查询图 $Q$ 在无向意义下是连通的，即对任意 $u, v \in V_Q$，
+存在 $V_Q$ 中的路径连接 $u$ 和 $v$。不连通的查询图将被后端验证阶段拒绝。
+\end{property}
+
+\begin{remark}[顶点 ID 归一化]
+系统内部要求 $V_Q = \{0, 1, \dots, n{-}1\}$，即顶点 ID 为连续整数。
+用户提交的任意 ID 将通过归一化映射转换为此形式（见第~\ref{sec:query-validation} 节）。
+\end{remark}
+
+\subsection{顺序空间 $\Omega(Q)$}
+\label{sec:formal-omega}
+
+\begin{definition}[有效顺序空间]
+给定连通查询图 $Q=(V_Q,E_Q,\ell_V,\ell_E)$，定义其\textbf{有效顺序空间}
+\[
+  \Omega(Q)=\left\{O=(v_1,\dots,v_n)\ \middle|\ O \text{ 是 }V_Q\text{ 的排列且满足连通扩展约束}\right\}
+\]
+其中连通扩展约束定义为：
+\[
+\forall k\in\{2,\dots,n\},\ \exists j<k,\ \{v_j,v_k\}\in E_Q
+\]
+\end{definition}
+
+\begin{remark}[搜索空间规模]
+$\Omega(Q)$ 是全排列空间的约束子集，即 $\Omega(Q)\subseteq \mathfrak{S}_{|V_Q|}$，
+因此有上界 $|\Omega(Q)| \le |V_Q|!$。
+\end{remark}
+
+\subsection{连通扩展顺序}
+\label{sec:formal-order}
+
+\begin{definition}[连通扩展顺序]
+\label{def:order}
+给定查询图 $Q = (V_Q, E_Q, \ell_V, \ell_E)$，一个\textbf{连通扩展顺序}
+（Connected Expansion Order）是 $V_Q$ 的一个排列
+\[
+  O = (v_1, v_2, \dots, v_n)
+\]
+满足以下\textbf{连通扩展约束}：对每个 $k$（$2 \le k \le n$），存在某个 $j$（$1 \le j < k$），
+使得
+\[
+  \{v_j, v_k\} \in E_Q
+\]
+
+等价地，记 $S_k = \{v_1, v_2, \dots, v_k\}$，则对每个 $k \ge 2$，新加入的顶点 $v_k$
+至少与 $S_{k-1}$ 中的一个顶点相邻。
+\end{definition}
+
+\begin{property}[前缀连通性]
+\label{prop:prefix-connected}
+若 $O$ 是连通扩展顺序且 $Q$ 是连通图，则对每个 $k \in \{1, 2, \dots, n\}$，
+$Q$ 在 $S_k$ 上的诱导子图是连通的。
+
+\begin{proof}
+归纳法。$k=1$ 时平凡成立。假设 $S_{k-1}$ 上的诱导子图连通，
+由连通扩展约束知 $v_k$ 与 $S_{k-1}$ 中某顶点相邻，因此 $S_k$ 上的诱导子图亦连通。
+\end{proof}
+\end{property}
+
+\begin{remark}[DFS 枚举中的遍历顺序]
+\label{rem:dfs-ordering}
+在 DFS 枚举过程中，候选顶点的遍历顺序采用以下字典序规则（tie-breaking）：
+先比较顶点标签 $\ell_V(v)$（升序），标签相同时比较顶点 ID $\mathrm{id}(v)$（升序）。
+该规则确保枚举过程的确定性（相同输入产生相同的遍历序列）。
+\end{remark}
+
+\subsection{前缀顶点集合与前缀子图}
+\label{sec:formal-prefix}
+
+\begin{definition}[前缀顶点集合]
+\label{def:prefix-vertex-set}
+给定连通扩展顺序 $O = (v_1, v_2, \dots, v_n)$，
+对每个 $k \in \{1, 2, \dots, n\}$，定义\textbf{前缀顶点集合}
+\[
+  S_k = \{v_1, v_2, \dots, v_k\}
+\]
+\end{definition}
+
+\begin{definition}[前缀子图]
+\label{def:prefix-subgraph}
+给定查询图 $Q = (V_Q, E_Q, \ell_V, \ell_E)$ 和前缀顶点集合 $S_k$，
+第 $k$ 个\textbf{前缀子图}定义为 $Q$ 在 $S_k$ 上的诱导子图
+\[
+  Q_k = Q[S_k] = (S_k,\; E_k,\; \ell_V|_{S_k},\; \ell_E|_{E_k})
+\]
+其中
+\[
+  E_k = \bigl\{\{u, w\} \in E_Q \;\big|\; u \in S_k \wedge w \in S_k\bigr\}
+\]
+即 $E_k$ 由 $E_Q$ 中两端点均在 $S_k$ 内的所有边组成。
+顶点标签函数和边标签函数分别限制到 $S_k$ 和 $E_k$ 上。
+\end{definition}
+
+\begin{property}[诱导子图的边继承性]
+前缀子图的边集 $E_k$ 完全由原查询图 $Q$ 的边集 $E_Q$ 决定——
+凡两端点均在 $S_k$ 中的原始边均被包含，不添加也不删除任何边。
+\end{property}
+
+\begin{property}[前缀子图的连通性]
+由性质~\ref{prop:prefix-connected} 直接推出，每个前缀子图 $Q_k$ 都是连通的。
+\end{property}
+
+\begin{remark}[与"查询子图"术语的关系]
+在本系统中，"查询子图"与"前缀子图"同义使用，均指查询图在某前缀顶点集上的诱导子图。
+本文档统一使用"前缀子图"以强调其与连通扩展顺序的关联。
+\end{remark}
+
+\subsection{基数估计与累计代价}
+\label{sec:formal-score}
+
+\begin{definition}[前缀基数估计]
+\label{def:cardinality-estimate}
+给定数据图 $G$、索引文件 $I$ 和前缀子图 $Q_k$，
+\textbf{基数估计函数}
+\[
+  \hat{c}_k = \mathrm{Est}(Q_k;\; G,\; I)
+\]
+返回 $Q_k$ 在 $G$ 中的匹配数（embedding count）的估计值。
+该函数由 FaSTest 估计器内核实现。
+\end{definition}
+
+\begin{definition}[累计代价（Score）]
+\label{def:score}
+给定连通扩展顺序 $O$ 及其对应的 $n$ 个前缀子图 $Q_1, Q_2, \dots, Q_n$，
+定义该顺序的\textbf{累计代价}（Score）为
+\[
+  \mathrm{score}(O) = \sum_{k=1}^{n} \omega_k \cdot \hat{c}_k = \sum_{k=1}^{n} \omega_k \cdot \mathrm{Est}(Q_k;\; G,\; I)
+\]
+其中 $\omega_k$ 为第 $k$ 步估计值的权重系数，默认值为 $1$。
+\end{definition}
+
+\begin{remark}[累计代价的直观含义]
+累计代价可理解为按照顺序 $O$ 执行子图匹配时，各步中间结果数量的估计总和。
+累计代价越小，意味着执行过程中产生的中间结果总量越少，查询计划的预期效率越高。
+\end{remark}
+
+\begin{remark}[最优顺序选择]
+系统通过 DFS 枚举 $\Omega(Q)$ 中的所有有效顺序 $\{O_1, O_2, \dots, O_K\}$，
+对每个顺序计算累计代价，选择最优顺序
+$O^* = \arg\min_{i} \mathrm{score}(O_i)$ 作为最终查询计划。
+可引入剪枝（branch-and-bound）、记忆化（memoization）等加速策略以降低搜索开销。
+\end{remark}
+
+\subsection{全局最优顺序与复杂度}
+\label{sec:formal-optimal}
+
+\begin{definition}[全局最优顺序]
+在有效顺序空间 $\Omega(Q)$ 上，定义全局最优顺序为
+\[
+O^*=\arg\min_{O\in\Omega(Q)}\mathrm{score}(O)
+\]
+若最优解不唯一，可选择任一达到最小值的顺序，或按字典序稳定打破平局。
+\end{definition}
+
+\begin{property}[枚举评估复杂度]
+若对每个顺序评估 $n$ 个前缀，则总估计任务数为
+\[
+N_{\text{task}} = n\cdot |\Omega(Q)|
+\]
+最坏情形下 $|\Omega(Q)|=O(n!)$，故总任务规模为 $O(n\cdot n!)$。
+\end{property}
+
+\subsection{算法伪代码}
+\label{sec:formal-pseudocode}
+
+\begin{figure}[htbp]
+\centering
+\begin{minipage}{0.94\textwidth}
+\begin{lstlisting}
+算法：Connected Order Enumeration (Dual Engine: Exact BFS / Beam Search)
+输入：查询图 Q=(V,E), 约束束宽系数 b (填 infinity 则退化为精确穷举 BFS)
+输出：优选流路径及评分演变过程 (当 b=inf 时输出等价于全排列确界)
+
+1) active_q <- []
+2) for root in Ordered(V): 
+3)    active_q.append( (P=[root], S={root}) )
+4) 
+5) for k = 2 to |V|:
+6)    next_q <- []
+7)    for (P, S) in active_q:
+8)        C <- {v in V\S | exists u in S: {u,v} in E}
+9)        for v in Ordered(C):
+10)           P_next, S_next <- P || [v], S union {v}
+11)           Q_eval <- BuildPrefixSubgraph(P_next)
+12)           eval_score <- InMemoryEstScore(Q_eval)
+13)           next_q.append( (P_next, S_next, eval_score) )
+14)           emit(prefix_estimated_update, P_next, eval_score)
+15)   if b is not infinity:
+16)       active_q <- RankAndTruncateTopB(next_q, b)
+17)   else:
+18)       active_q <- next_q
+19) return ResolveBestRouteFound(active_q)
+\end{lstlisting}
+\end{minipage}
+\caption{双模式连通顺序枚举伪代码}
+\label{alg:enumeration}
+\end{figure}
+
+\begin{figure}[htbp]
+\centering
+\begin{minipage}{0.94\textwidth}
+\begin{lstlisting}
+算法：Prefix Evaluation
+输入：顺序 O=(v_1,...,v_n), 数据图 G, 索引 I
+输出：score(O)
+
+1) score <- 0
+2) for k in 1..n:
+3)   Q_k <- BuildPrefixInducedSubgraph(O, k)
+4)   c_hat <- Est(Q_k; G, I)
+5)   score <- score + omega_k * c_hat
+6)   emit(prefix_estimated, k, c_hat)
+7)   emit(score_updated, score)
+8) return score
+\end{lstlisting}
+\end{minipage}
+\caption{前缀评估伪代码}
+\label{alg:prefix-eval}
+\end{figure}
+
+\begin{figure}[htbp]
+\centering
+\begin{minipage}{0.94\textwidth}
+\begin{lstlisting}
+算法：Real-Time Ranking Update + Best Selection
+输入：更新流 (order_id, score_t)
+状态：Ranking, TopK, best_order
+
+1) on score_updated(order_id, s):
+2)   Ranking.update(order_id, s)
+3)   TopK <- Ranking.first_k(k)
+4)   emit(ranking_updated, TopK, delta)
+5)   if Ranking.first() != best_order:
+6)       best_order <- Ranking.first()
+7)       emit(best_order_selected, best_order)
+\end{lstlisting}
+\end{minipage}
+\caption{实时排序与最优顺序选择伪代码}
+\label{alg:ranking-best}
+\end{figure}
+
+% ============================================================
+%  第 9 章  性能与复杂度分析 
+% ============================================================
+\section{性能与复杂度分析}
+\subsection{并发模型与资源边界}
+
+\begin{itemize}
+  \item \textbf{会话内并行}：多顺序并发评估 + 会话间限流（防止资源争抢）；
+  \item \textbf{执行阶段}：独立使用执行引擎并发配额、结果缓冲区上限、执行超时与取消协议。
+\end{itemize}
+
+穷举搜索在此问题上的最坏时间复杂度为 $O(n!)$。当查询图规模较大且需要满足前端交互响应要求时，系统将通过启发式波束搜索（Beam Search）设定常量束窗 $b$，将每一层的状态空间截断为多项式级别 $O(b \times |V|)$。此策略通过限制分支数量来控制内存与计算开销：
+\begin{itemize}
+  \item \textbf{波束宽度限制（Beam Capacity）}：利用固定的宽幅 $b$ 去除低优先级的分支，使得总体空间复杂度收敛。
+  \item \textbf{局部异常分支修剪}：即使未超过束窗限制，对于明显偏离平均估算的劣势分支也将被提前剪枝以释放资源。
+  \item 控制每层按层同步评估（Level-wise Evolution），并保证在稳定的评估步进向前端发送更新事件，以此作为平滑展现多顺序进度更新的基础设计。这种设计损失了小部分寻获数学全局最优的高置信概率，进而换取了界面状态展现和性能的极致稳定。
+\end{itemize}
+
+% ============================================================
+%  第 10 章  下游执行集成
+% ============================================================
+\section{下游执行集成}
+\subsection{下游引擎适配}
+
+系统在确定最优顺序 $O^*$ 后，通过执行适配器将其提交至下游图查询引擎：
+\begin{itemize}
+  \item \textbf{计划转换}：将最优顺序 $O^*$ 转换为下游图查询引擎可接受的查询计划格式；
+  \item \textbf{执行触发}：将最优查询计划（即算子的匹配顺序）下发至图查询引擎。需要注意的是，此架构要求下游引擎需对外暴露修改内部查询算子遍历顺序的接口；若下游引擎仅提供高层抽象接口（如标准化 SQL/Cypher）而不允许介入其查询优化器的物理层计划执行，则需要针对该引擎做出特定的接口适配；
+  \item \textbf{结果回传}：执行状态与结果通过 SSE 事件流式返回前端，包括匹配数、匹配实例、执行耗时等统计信息；
+  \item \textbf{反馈记录（可选）}：记录估计代价与真实执行代价的偏差，用于后续权重系数 $\omega_k$ 的校准。
+\end{itemize}
+
+
+\begin{thebibliography}{9}
+\bibitem{fastest2024}
+  Cardinality Estimation of Subgraph Matching: A Filtering-Sampling Approach.
+  \textit{Proceedings of the VLDB Endowment}, 2024.
+\end{thebibliography}
+
+\end{document}

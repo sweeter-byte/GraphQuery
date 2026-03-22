@@ -1,0 +1,5 @@
+{
+    "mode": "auto",
+    "python_threads": 4,
+    "omp_threads": 4
+}
