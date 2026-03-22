@@ -11,7 +11,7 @@
 当前 M2 使用线性代价模型对每个序列 $S$ 打分：
 
 $$
-\text{score}(O) = \sum_{k=1}^{n} \omega_k \cdot \hat{c}_k
+\text{score}(S) = \sum_{k=1}^{n} \omega_k \cdot \hat{c}_k
 $$
 
 - $\hat{c}_k$：第 $k$ 个前缀子图的 FaSTest 基数估计值
