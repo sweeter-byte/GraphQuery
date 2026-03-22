@@ -1,21 +1,21 @@
 #!/usr/bin/env python3
 """
-批量实验脚本：对每个 (数据集, 查询图) 对，跑所有有效 (filter, order) 组合的
-filter-order 阶段，记录输出的查询序列。
+补充脚本 B：提取每种 filter 对每个查询图的候选集特征。
+
+对每个 (dataset, query_graph, filter) 三元组运行一次 C++ 二进制，
+使用 -num 1 跳过枚举，仅执行 filter 阶段，解析候选集信息。
+
+候选集只取决于 (dataset, query, filter)，与 order 无关，
+因此只需跑 9 种 filter（而非 81 种 filter×order 组合）。
 
 输出 CSV 格式:
-  dataset, query_file, query_vertices, query_edges, filter, order,
-  sequence, filter_time, plan_time, preprocessing_time, status
+    dataset, query_file, filter, candidates_per_vertex,
+    total_candidates, min_candidates, max_candidates,
+    avg_candidates, filter_time, status
 
 用法:
-    python tools/run_filter_order_experiment.py \
-        --dataset_dir dataset \
-        --output results/m1_sequences.csv \
-        --workers 8 \
-        --time_limit 30
-
-只需要 filter-order 阶段的结果（查询序列），不需要完整枚举。
-使用 -num 1 跳过枚举阶段以加速。
+    python tools/extract_candidate_features.py --dataset_dir dataset
+    python tools/extract_candidate_features.py --datasets yeast --workers 4
 """
 
 from __future__ import annotations
@@ -28,10 +28,6 @@ import subprocess
 import sys
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
-
-# ---------------------------------------------------------------------------
-# 常量
-# ---------------------------------------------------------------------------
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
@@ -46,31 +42,22 @@ BINARY = (
     / "SubgraphMatching.out"
 )
 
-# 81 种有效 (filter, order) 组合（排除 CECI）
+# 9 种 filter（排除 CECI，因为它需要特殊数据结构）
 VALID_FILTERS = ["LDF", "NLF", "GQL", "TSO", "CFL", "DPiso", "VEQ", "RM", "CaLiG"]
-VALID_ORDERS = ["QSI", "GQL", "TSO", "CFL", "DPiso", "RI", "VF2PP", "VF3", "RM"]
 
-# 正则
-RE_QUERY_PLAN = re.compile(r"Query Plan:\s*(.+)")
+# 固定使用 QSI order 和 LFTJ engine，不影响 filter 阶段结果
+FIXED_ORDER = "QSI"
+FIXED_ENGINE = "LFTJ"
+
+# 正则：解析 stdout
+RE_CANDIDATES_PER_VERTEX = re.compile(r"Candidates Per Vertex:([\d,]+)")
+RE_TOTAL_CANDIDATES = re.compile(r"Total Candidates:\s*(\d+)")
 RE_FILTER_TIME = re.compile(r"Filter vertices time \(seconds\):\s*([\d.]+)")
-RE_PLAN_TIME = re.compile(r"Generate query plan time \(seconds\):\s*([\d.]+)")
-RE_PREPROCESS_TIME = re.compile(r"Preprocessing time \(seconds\):\s*([\d.]+)")
-RE_HEADER = re.compile(r"^t\s+(\d+)\s+(\d+)")
+
 
 # ---------------------------------------------------------------------------
-# 辅助
+# 环境
 # ---------------------------------------------------------------------------
-
-
-def parse_query_header(query_path: str) -> tuple[int, int]:
-    """读取查询图的 |V| 和 |E|。"""
-    with open(query_path) as f:
-        for line in f:
-            m = RE_HEADER.match(line.strip())
-            if m:
-                return int(m.group(1)), int(m.group(2))
-    return 0, 0
-
 
 def build_subprocess_env() -> dict[str, str]:
     """确保 LD_LIBRARY_PATH 包含 Survey 的 .so 目录。"""
@@ -92,24 +79,25 @@ def build_subprocess_env() -> dict[str, str]:
 ENV = build_subprocess_env()
 
 
+# ---------------------------------------------------------------------------
+# 单次运行
+# ---------------------------------------------------------------------------
+
 def run_single(
     data_graph: str,
     query_graph: str,
     filter_type: str,
-    order_type: str,
     time_limit: int,
 ) -> dict[str, str]:
-    """
-    运行一次 Survey filter-order 阶段，返回解析结果 dict。
-    """
+    """运行一次 filter 阶段，解析候选集信息。"""
     cmd = [
         str(BINARY),
         "-d", data_graph,
         "-q", query_graph,
         "-filter", filter_type,
-        "-order", order_type,
-        "-engine", "LFTJ",       # engine 不影响 filter-order 结果
-        "-num", "1",             # 跳过枚举
+        "-order", FIXED_ORDER,
+        "-engine", FIXED_ENGINE,
+        "-num", "1",                  # 跳过枚举
         "-time_limit", str(time_limit),
     ]
 
@@ -126,76 +114,59 @@ def run_single(
         stdout = proc.stdout
         rc = proc.returncode
     except subprocess.TimeoutExpired:
-        return {
-            "sequence": "",
-            "filter_time": "",
-            "plan_time": "",
-            "preprocessing_time": "",
-            "status": "TIMEOUT",
-        }
+        return {"status": "TIMEOUT"}
     except Exception as e:
-        return {
-            "sequence": "",
-            "filter_time": "",
-            "plan_time": "",
-            "preprocessing_time": "",
-            "status": f"ERROR:{e}",
-        }
+        return {"status": f"ERROR:{e}"}
 
     if rc != 0:
-        return {
-            "sequence": "",
-            "filter_time": "",
-            "plan_time": "",
-            "preprocessing_time": "",
-            "status": f"CRASH:rc={rc}",
-        }
+        return {"status": f"CRASH:rc={rc}"}
 
-    # 解析
-    m_plan = RE_QUERY_PLAN.search(stdout)
+    # 解析候选集
+    m_cpv = RE_CANDIDATES_PER_VERTEX.search(stdout)
+    m_total = RE_TOTAL_CANDIDATES.search(stdout)
     m_ft = RE_FILTER_TIME.search(stdout)
-    m_pt = RE_PLAN_TIME.search(stdout)
-    m_pp = RE_PREPROCESS_TIME.search(stdout)
 
-    sequence = m_plan.group(1).strip() if m_plan else ""
+    if not m_cpv:
+        return {"status": "NO_CANDIDATES"}
+
+    cpv_str = m_cpv.group(1)  # e.g. "21,162,196,2"
+    counts = [int(x) for x in cpv_str.split(",")]
 
     return {
-        "sequence": sequence,
+        "candidates_per_vertex": cpv_str,
+        "total_candidates": m_total.group(1) if m_total else str(sum(counts)),
+        "min_candidates": str(min(counts)),
+        "max_candidates": str(max(counts)),
+        "avg_candidates": str(round(sum(counts) / len(counts), 2)),
         "filter_time": m_ft.group(1) if m_ft else "",
-        "plan_time": m_pt.group(1) if m_pt else "",
-        "preprocessing_time": m_pp.group(1) if m_pp else "",
-        "status": "OK" if sequence else "NO_PLAN",
+        "status": "OK",
     }
 
 
 # ---------------------------------------------------------------------------
-# 任务封装（用于多进程 map）
+# 任务封装
 # ---------------------------------------------------------------------------
 
 def _task_wrapper(args: tuple) -> dict[str, str]:
-    (dataset_name, data_graph, query_file, query_basename,
-     nv, ne, ft, ot, time_limit) = args
+    dataset_name, data_graph, query_file, query_basename, ft, time_limit = args
 
-    result = run_single(data_graph, query_file, ft, ot, time_limit)
+    result = run_single(data_graph, query_file, ft, time_limit)
     result["dataset"] = dataset_name
     result["query_file"] = query_basename
-    result["query_vertices"] = str(nv)
-    result["query_edges"] = str(ne)
     result["filter"] = ft
-    result["order"] = ot
+
+    # 如果失败，填充空值
+    for key in ("candidates_per_vertex", "total_candidates",
+                "min_candidates", "max_candidates",
+                "avg_candidates", "filter_time"):
+        result.setdefault(key, "")
+
     return result
 
 
 # ---------------------------------------------------------------------------
-# 主逻辑
+# 发现文件
 # ---------------------------------------------------------------------------
-
-FIELDNAMES = [
-    "dataset", "query_file", "query_vertices", "query_edges",
-    "filter", "order", "sequence",
-    "filter_time", "plan_time", "preprocessing_time", "status",
-]
-
 
 def discover_datasets(dataset_dir: str) -> list[tuple[str, str]]:
     """发现所有 (dataset_name, data_graph_path) 对。"""
@@ -212,26 +183,39 @@ def discover_datasets(dataset_dir: str) -> list[tuple[str, str]]:
 
 def discover_queries(dataset_dir: str, dataset_name: str) -> list[str]:
     """发现某个数据集下的所有查询图文件。"""
-    query_dir = os.path.join(dataset_dir, dataset_name, "gen_query_graph")
-    if not os.path.isdir(query_dir):
-        return []
-    files = sorted(
-        f for f in os.listdir(query_dir)
-        if f.endswith(".graph")
-    )
-    return [os.path.join(query_dir, f) for f in files]
+    for subdir in ("gen_query_graph", "query_graph"):
+        query_dir = os.path.join(dataset_dir, dataset_name, subdir)
+        if os.path.isdir(query_dir):
+            files = sorted(
+                f for f in os.listdir(query_dir)
+                if f.endswith(".graph")
+            )
+            return [os.path.join(query_dir, f) for f in files]
+    return []
+
+
+# ---------------------------------------------------------------------------
+# 主逻辑
+# ---------------------------------------------------------------------------
+
+FIELDNAMES = [
+    "dataset", "query_file", "filter",
+    "candidates_per_vertex", "total_candidates",
+    "min_candidates", "max_candidates", "avg_candidates",
+    "filter_time", "status",
+]
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="批量运行 filter-order 组合，记录查询序列"
+        description="补充脚本 B：提取每种 filter 的候选集特征"
     )
     parser.add_argument(
         "--dataset_dir", default=str(PROJECT_ROOT / "dataset"),
         help="数据集根目录 (default: <project>/dataset)",
     )
     parser.add_argument(
-        "--output", default=str(PROJECT_ROOT / "results" / "m1_sequences.csv"),
+        "--output", default=str(PROJECT_ROOT / "results" / "candidate_features.csv"),
         help="输出 CSV 路径",
     )
     parser.add_argument(
@@ -239,7 +223,7 @@ def main() -> None:
         help="并行工作进程数",
     )
     parser.add_argument(
-        "--time_limit", type=int, default=30,
+        "--time_limit", type=int, default=60,
         help="每次运行的时间限制 (秒)",
     )
     parser.add_argument(
@@ -250,8 +234,14 @@ def main() -> None:
         "--query_pattern", default=None,
         help="查询图文件名过滤 (子串匹配, 如 'dense_16')",
     )
+    parser.add_argument(
+        "--filters", nargs="*", default=None,
+        help="只跑指定 filter (默认全部 9 种)",
+    )
 
     args = parser.parse_args()
+
+    filters = args.filters if args.filters else VALID_FILTERS
 
     # 发现数据集
     all_datasets = discover_datasets(args.dataset_dir)
@@ -263,7 +253,8 @@ def main() -> None:
         print("ERROR: No datasets found in", args.dataset_dir, file=sys.stderr)
         sys.exit(1)
 
-    print(f"Datasets found: {[n for n, _ in all_datasets]}")
+    print(f"Datasets: {[n for n, _ in all_datasets]}")
+    print(f"Filters:  {filters}")
 
     # 构建任务列表
     tasks: list[tuple] = []
@@ -272,19 +263,16 @@ def main() -> None:
         if args.query_pattern:
             queries = [q for q in queries if args.query_pattern in os.path.basename(q)]
 
-        print(f"  {dataset_name}: {len(queries)} query graphs "
-              f"× {len(VALID_FILTERS)}×{len(VALID_ORDERS)}={len(VALID_FILTERS)*len(VALID_ORDERS)} combos "
-              f"= {len(queries) * len(VALID_FILTERS) * len(VALID_ORDERS)} tasks")
+        print(f"  {dataset_name}: {len(queries)} query graphs × {len(filters)} filters "
+              f"= {len(queries) * len(filters)} tasks")
 
         for qf in queries:
-            nv, ne = parse_query_header(qf)
             qbasename = os.path.basename(qf)
-            for ft in VALID_FILTERS:
-                for ot in VALID_ORDERS:
-                    tasks.append((
-                        dataset_name, data_graph, qf, qbasename,
-                        nv, ne, ft, ot, args.time_limit,
-                    ))
+            for ft in filters:
+                tasks.append((
+                    dataset_name, data_graph, qf, qbasename,
+                    ft, args.time_limit,
+                ))
 
     total = len(tasks)
     print(f"\nTotal tasks: {total}")
@@ -309,12 +297,12 @@ def main() -> None:
             for future in as_completed(futures):
                 completed += 1
                 result = future.result()
-                writer.writerow(result)
+                writer.writerow({k: result[k] for k in FIELDNAMES})
 
                 if result["status"] == "OK":
                     ok_count += 1
 
-                if completed % 500 == 0 or completed == total:
+                if completed % 200 == 0 or completed == total:
                     csvfile.flush()
                     pct = completed * 100 / total
                     print(

@@ -92,6 +92,8 @@ int main(int argc, char** argv) {
     std::string input_distribution_file_path = command.getDistributionFilePath();
     std::string input_csr_file_path = command.getCSRFilePath();
 
+    std::string input_order_file_path = command.getOrderFilePath();
+
     std::string input_enable_symmetry = command.getEnableSymmetry();
 
     
@@ -224,6 +226,15 @@ int main(int argc, char** argv) {
        total_candidates_count += candidates_count[i];
     }
 
+    // 输出每个查询顶点的候选数（供 Python 脚本解析）
+    std::cout << "Candidates Per Vertex:";
+    for (ui i = 0; i < query_graph->getVerticesCount(); ++i) {
+        if (i > 0) std::cout << ",";
+        std::cout << candidates_count[i];
+    }
+    std::cout << std::endl;
+    std::cout << "Total Candidates: " << total_candidates_count << std::endl;
+
     
     if (input_filter_type != "CECI")
         FilterVertices::sortCandidates(candidates, candidates_count, query_graph->getVerticesCount());
@@ -316,6 +327,51 @@ int main(int argc, char** argv) {
         GenerateQueryPlan::generateRMQueryPlan(query_graph, matching_order, edge_matrix, pivots);
     } else if (input_order_type == "Spectrum") {
         GenerateQueryPlan::generateOrderSpectrum(query_graph, spectrum, order_num);
+    } else if (input_order_type == "CUSTOM") {
+        // Read matching order from file specified by -order_file.
+        // File format: space-separated vertex IDs, e.g. "2 0 3 1\n"
+        if (input_order_file_path.empty()) {
+            std::cout << "CUSTOM order requires -order_file <path>." << std::endl;
+            exit(-1);
+        }
+        std::ifstream order_file(input_order_file_path);
+        if (!order_file.is_open()) {
+            std::cout << "Cannot open order file: " << input_order_file_path << std::endl;
+            exit(-1);
+        }
+
+        ui query_vertices_num = query_graph->getVerticesCount();
+        matching_order = new ui[query_vertices_num];
+        pivots = new ui[query_vertices_num];
+
+        for (ui i = 0; i < query_vertices_num; ++i) {
+            if (!(order_file >> matching_order[i])) {
+                std::cout << "Order file has fewer vertices than query graph ("
+                          << query_vertices_num << " expected)." << std::endl;
+                exit(-1);
+            }
+        }
+        order_file.close();
+
+        // Generate pivots: for each position i > 0, find the first previously
+        // visited neighbor of matching_order[i] in the query graph.
+        std::vector<bool> visited(query_vertices_num, false);
+        visited[matching_order[0]] = true;
+        pivots[0] = matching_order[0];
+
+        for (ui i = 1; i < query_vertices_num; ++i) {
+            VertexID u = matching_order[i];
+            ui nbr_count;
+            const VertexID* neighbors = query_graph->getVertexNeighbors(u, nbr_count);
+            pivots[i] = matching_order[0]; // fallback
+            for (ui j = 0; j < nbr_count; ++j) {
+                if (visited[neighbors[j]]) {
+                    pivots[i] = neighbors[j];
+                    break;
+                }
+            }
+            visited[u] = true;
+        }
     } else {
         std::cout << "The specified order type '" << input_order_type << "' is not supported." << std::endl;
     }

@@ -25,7 +25,8 @@ enum OptionKeyword {
     DistributionFilePath = 13,          
     CSRFilePath = 14,                    
 
-    EnableSymmetry = 15 
+    EnableSymmetry = 15,
+    OrderFilePath = 16
 };
 
 class MatchingCommand : public CommandParser{
@@ -100,6 +101,10 @@ public:
 
     std::string getEnableSymmetry() {
         return options_value[OptionKeyword::EnableSymmetry] == "" ? "" : options_value[OptionKeyword::EnableSymmetry];
+    }
+
+    std::string getOrderFilePath() {
+        return options_value[OptionKeyword::OrderFilePath] == "" ? "" : options_value[OptionKeyword::OrderFilePath];
     }
 };
 

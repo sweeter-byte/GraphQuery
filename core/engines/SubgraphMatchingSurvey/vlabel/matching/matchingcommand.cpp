@@ -22,6 +22,7 @@ MatchingCommand::MatchingCommand(const int argc, char **argv) : CommandParser(ar
     options_key[OptionKeyword::DistributionFilePath] = "-dis_file";
     options_key[OptionKeyword::CSRFilePath] = "-csr";
     options_key[OptionKeyword::EnableSymmetry] = "-symmetry";
+    options_key[OptionKeyword::OrderFilePath] = "-order_file";
     processOptions();
 };
 
@@ -73,4 +74,6 @@ void MatchingCommand::processOptions() {
 
     
     options_value[OptionKeyword::EnableSymmetry] = getCommandOption(options_key[OptionKeyword::EnableSymmetry]);
+
+    options_value[OptionKeyword::OrderFilePath] = getCommandOption(options_key[OptionKeyword::OrderFilePath]);
 }
