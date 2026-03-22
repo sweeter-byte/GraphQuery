@@ -224,6 +224,15 @@ int main(int argc, char** argv) {
        total_candidates_count += candidates_count[i];
     }
 
+    // 输出每个查询顶点的候选数（供 Python 脚本解析）
+    std::cout << "Candidates Per Vertex:";
+    for (ui i = 0; i < query_graph->getVerticesCount(); ++i) {
+        if (i > 0) std::cout << ",";
+        std::cout << candidates_count[i];
+    }
+    std::cout << std::endl;
+    std::cout << "Total Candidates: " << total_candidates_count << std::endl;
+
     
     if (input_filter_type != "CECI")
         FilterVertices::sortCandidates(candidates, candidates_count, query_graph->getVerticesCount());
