@@ -16,7 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from experiments.common.config import base_argparser, DATASET_SIZES, ALL_DATASETS
 from experiments.common.graph_loader import discover_queries
 from experiments.common.csv_writer import ExperimentCSV
-from experiments.common.timing import timer
+from experiments.common.timing import timer, query_timeout, QueryTimeout
 from experiments.common.logger import setup_logger, ErrorCounter
 
 from server.services.order_strategies.pruned import generate_orders_pruned
@@ -75,17 +75,33 @@ def main():
 
             for q in queries:
               try:
-                graph = q["graph"]
-                for cfg_name, cfg_kwargs in configs.items():
-                    with timer() as t:
-                        orders = generate_orders_pruned(
-                            graph, max_orders=args.max_orders, **cfg_kwargs,
-                        )
-                    csv_out.write_row(
-                        dataset=ds, size=q["size"], density=q["density"],
-                        query=q["name"], config=cfg_name,
-                        n_orders=len(orders), time_s=f"{t.elapsed_s:.6f}",
-                    )
+                with query_timeout(args.timeout):
+                  graph = q["graph"]
+                  skip_rest = False
+                  for cfg_name, cfg_kwargs in configs.items():
+                      if skip_rest:
+                          csv_out.write_row(
+                              dataset=ds, size=q["size"], density=q["density"],
+                              query=q["name"], config=cfg_name,
+                              n_orders=0, time_s="0.000000",
+                          )
+                          continue
+                      with timer() as t:
+                          orders = generate_orders_pruned(
+                              graph, max_orders=args.max_orders, **cfg_kwargs,
+                          )
+                      csv_out.write_row(
+                          dataset=ds, size=q["size"], density=q["density"],
+                          query=q["name"], config=cfg_name,
+                          n_orders=len(orders), time_s=f"{t.elapsed_s:.6f}",
+                      )
+                      # If "full" (best) config found 0 orders, skip remaining
+                      # configs — they won't do better with fewer strategies.
+                      if cfg_name == "full" and len(orders) == 0:
+                          skip_rest = True
+              except QueryTimeout:
+                log.warning("query %s timed out (%ds)", q["name"], args.timeout)
+                errors.record(dataset=ds, query=q["name"], phase="E7c", error=f"timeout ({args.timeout}s)")
               except Exception as e:
                 log.error("query %s failed: %s", q["name"], e, exc_info=True)
                 errors.record(dataset=ds, query=q["name"], phase="E7c", error=str(e))

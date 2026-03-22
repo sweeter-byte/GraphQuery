@@ -14,6 +14,7 @@ import logging
 import os
 import re
 import subprocess
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -113,6 +114,7 @@ class SurveyEngineAdapter:
         filter_type: str | None = None,
         order_type: str | None = None,
         engine_type: str | None = None,
+        custom_order: list[int] | None = None,
         timeout: int | None = None,
     ) -> dict[str, Any]:
         """
@@ -137,6 +139,10 @@ class SurveyEngineAdapter:
         engine_type : str or None
             Enumeration engine. Default: LFTJ.
             Options: EXPLORE, LFTJ, GQL, QSI, VF3, VEQ, DPiso, RM, KSS, CECI
+        custom_order : list[int] or None
+            Explicit query vertex order to execute. When provided, overrides
+            ``order_type`` and is passed to Survey as ``-order CUSTOM`` plus
+            a temporary ``-order_file``.
         timeout : int or None
             Subprocess timeout in seconds. Defaults to time_limit + 30.
 
@@ -154,8 +160,14 @@ class SurveyEngineAdapter:
             )
 
         ft = filter_type or self.default_filter
-        ot = order_type or self.default_order
+        ot = "CUSTOM" if custom_order is not None else (order_type or self.default_order)
         et = engine_type or self.default_engine
+
+        order_file_path: str | None = None
+        if custom_order is not None:
+            fd, order_file_path = tempfile.mkstemp(prefix="survey_order_", suffix=".txt")
+            os.close(fd)
+            Path(order_file_path).write_text(" ".join(str(v) for v in custom_order) + "\n")
 
         cmd = [
             self.binary_path,
@@ -167,60 +179,66 @@ class SurveyEngineAdapter:
             "-num", str(max_embeddings),
             "-time_limit", str(time_limit),
         ]
+        if order_file_path is not None:
+            cmd.extend(["-order_file", order_file_path])
 
         if timeout is None:
             timeout = time_limit + 30
 
-        exec_log.info(
-            "SURVEY_EXEC_START | cmd=%s | timeout=%ds",
-            " ".join(cmd), timeout,
-        )
-
-        timed_out = False
         try:
-            proc = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=timeout,
-                env=self._build_subprocess_env(),
+            exec_log.info(
+                "SURVEY_EXEC_START | cmd=%s | timeout=%ds",
+                " ".join(cmd), timeout,
             )
-            stdout = proc.stdout
-            returncode = proc.returncode
-        except subprocess.TimeoutExpired as e:
-            timed_out = True
-            stdout = e.stdout or ""
-            if isinstance(stdout, bytes):
-                stdout = stdout.decode("utf-8", errors="replace")
-            returncode = -1
-            exec_log.warning(
-                "SURVEY_EXEC_TIMEOUT | timeout=%ds | partial_stdout_len=%d",
-                timeout, len(stdout),
+            timed_out = False
+            try:
+                proc = subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=timeout,
+                    env=self._build_subprocess_env(),
+                )
+                stdout = proc.stdout
+                returncode = proc.returncode
+            except subprocess.TimeoutExpired as e:
+                timed_out = True
+                stdout = e.stdout or ""
+                if isinstance(stdout, bytes):
+                    stdout = stdout.decode("utf-8", errors="replace")
+                returncode = -1
+                exec_log.warning(
+                    "SURVEY_EXEC_TIMEOUT | timeout=%ds | partial_stdout_len=%d",
+                    timeout, len(stdout),
+                )
+
+            result = self._parse_output(stdout)
+            result["returncode"] = returncode
+            result["timed_out"] = timed_out
+            result["stdout"] = stdout
+            if custom_order is not None:
+                result["custom_order"] = list(custom_order)
+
+            total_t = result.get("total_time_seconds", 0.0)
+            emb = result.get("embedding_count", 0)
+            if total_t > 0:
+                result["eps"] = emb / total_t
+            else:
+                result["eps"] = 0.0
+
+            exec_log.info(
+                "SURVEY_EXEC_DONE | embeddings=%s | total_time=%.4fs | "
+                "enum_time=%.4fs | eps=%.2f | returncode=%d | timed_out=%s",
+                result.get("embedding_count"), total_t,
+                result.get("enumeration_time_seconds", 0.0),
+                result.get("eps", 0.0),
+                returncode, timed_out,
             )
 
-        result = self._parse_output(stdout)
-        result["returncode"] = returncode
-        result["timed_out"] = timed_out
-        result["stdout"] = stdout
-
-        # Compute EPS
-        total_t = result.get("total_time_seconds", 0.0)
-        emb = result.get("embedding_count", 0)
-        if total_t > 0:
-            result["eps"] = emb / total_t
-        else:
-            result["eps"] = 0.0
-
-        exec_log.info(
-            "SURVEY_EXEC_DONE | embeddings=%s | total_time=%.4fs | "
-            "enum_time=%.4fs | eps=%.2f | returncode=%d | timed_out=%s",
-            result.get("embedding_count"), total_t,
-            result.get("enumeration_time_seconds", 0.0),
-            result.get("eps", 0.0),
-            returncode, timed_out,
-        )
-
-        return result
+            return result
+        finally:
+            if order_file_path and os.path.exists(order_file_path):
+                os.remove(order_file_path)
 
     def _parse_output(self, stdout: str) -> dict[str, Any]:
         """Parse all metrics from the Survey binary stdout."""

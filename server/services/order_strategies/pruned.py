@@ -76,6 +76,7 @@ def generate_orders_pruned(
     exact_threshold: int = 7,
     cost_factor: float = 2.0,
     max_orders: int = 500,
+    max_heap_pops: int = 200_000,
     enable_symmetry: bool = True,
     enable_core_first: bool = True,
     enable_astar_prune: bool = True,
@@ -90,6 +91,7 @@ def generate_orders_pruned(
     exact_threshold : unused (kept for interface compatibility)
     cost_factor : prune partial orders whose f > cost_factor * best_complete
     max_orders : hard cap on number of complete orders returned
+    max_heap_pops : search budget — stop after this many heap pops (default 200k)
     enable_symmetry : S1 — collapse equivalent vertices (default True)
     enable_core_first : S2 — prioritize high k-core vertices (default True)
     enable_astar_prune : S3 — A* cost cutoff (False = cost_factor=inf)
@@ -112,6 +114,7 @@ def generate_orders_pruned(
 
     # --- A* search (S3) with S1/S2/S4 integrated ---
     counter = 0
+    pops = 0
     best_cost = float("inf")
     results: list[list[int]] = []
 
@@ -137,8 +140,35 @@ def generate_orders_pruned(
         heapq.heappush(heap, (f, counter, (v,), frozenset({v}), g))
         counter += 1
 
+    max_depth_seen = 1  # track deepest path reached
+
     while heap and len(results) < max_orders:
+        pops += 1
+        if pops > max_heap_pops:
+            logger.warning(
+                "PRUNED_SEARCH budget exhausted | V=%d | pops=%d | found=%d | max_depth=%d",
+                n, pops, len(results), max_depth_seen,
+            )
+            break
+        # Early futility checks (only when no results found yet):
+        if not results:
+            # (a) 20% budget used but depth < V/2 → search too shallow
+            if pops > max_heap_pops // 5 and max_depth_seen < n // 2:
+                logger.warning(
+                    "PRUNED_SEARCH early abort (shallow) | V=%d | pops=%d | max_depth=%d",
+                    n, pops, max_depth_seen,
+                )
+                break
+            # (b) 50% budget used but depth < V*2/3 → unlikely to complete
+            if pops > max_heap_pops // 2 and max_depth_seen < (n * 2) // 3:
+                logger.warning(
+                    "PRUNED_SEARCH early abort (stalled) | V=%d | pops=%d | max_depth=%d",
+                    n, pops, max_depth_seen,
+                )
+                break
         f_score, _, path, in_path, g_score = heapq.heappop(heap)
+        if len(path) > max_depth_seen:
+            max_depth_seen = len(path)
 
         # S3 pruning
         if f_score > effective_cost_factor * best_cost:
@@ -191,7 +221,7 @@ def generate_orders_pruned(
             counter += 1
 
     logger.info(
-        "PRUNED_SEARCH | V=%d | orders_generated=%d | best_cost=%.2f",
-        n, len(results), best_cost if best_cost < float("inf") else -1,
+        "PRUNED_SEARCH | V=%d | orders_generated=%d | heap_pops=%d | best_cost=%.2f",
+        n, len(results), counter, best_cost if best_cost < float("inf") else -1,
     )
     return results

@@ -17,26 +17,26 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from experiments.common.config import base_argparser, DATASET_SIZES, DATASET_ROOT
-from experiments.common.graph_loader import discover_queries
+from experiments.common.graph_loader import discover_queries, generate_orders
 from experiments.common.csv_writer import ExperimentCSV
-from experiments.common.timing import timer
+from experiments.common.timing import timer, query_timeout, QueryTimeout
 from experiments.common.stats import spearman_corr, mean_std, wilcoxon_test
 from experiments.common.m2_runner import run_m2
 from experiments.common.logger import setup_logger, ErrorCounter
 
 from server.services.estimator_adapter import EstimatorAdapter
-from server.services.order_strategies.pruned import generate_orders_pruned
 from server.services.graph_format_converter import serialize_graph_to_file
 from server.services.survey_engine_adapter import SurveyEngineAdapter
 
 
-def _run_m3(engine, data_graph_path, query_path, max_emb, time_limit):
+def _run_m3(engine, data_graph_path, query_path, max_emb, time_limit, custom_order=None):
     """Execute M3 and return result dict."""
     log = logging.getLogger("exp.E1")
     try:
         result = engine.execute(
             data_graph_path, query_path,
             max_embeddings=max_emb, time_limit=time_limit,
+            custom_order=custom_order,
         )
         return {
             "eps": result.get("eps", 0.0),
@@ -114,86 +114,96 @@ def main():
 
             for q in queries:
               try:
-                graph = q["graph"]
-                orders = generate_orders_pruned(graph)
-                if not orders:
-                    continue
+                with query_timeout(args.timeout):
+                  graph = q["graph"]
+                  orders = generate_orders(graph)
+                  if not orders:
+                      continue
 
-                # M2 ranking
-                res_m2 = run_m2(graph, orders, adapter)
-                ranking = res_m2.aggregator.get_top_k()
+                  # M2 ranking
+                  res_m2 = run_m2(graph, orders, adapter)
+                  ranking = res_m2.aggregator.get_top_k()
 
-                tmp_query = serialize_graph_to_file(graph)
+                  tmp_query = serialize_graph_to_file(graph)
 
-                def _exec(source, oid, score):
-                    r = _run_m3(engine, data_graph_path, tmp_query,
-                                args.max_embeddings, args.time_limit)
-                    csv_out.write_row(
-                        dataset=ds, size=q["size"], density=q["density"],
-                        query=q["name"], n_orders=len(orders),
-                        source=source, order_id=oid, m2_score=f"{score:.4f}",
-                        m3_eps=f"{r['eps']:.2f}", m3_embeddings=r["embeddings"],
-                        m3_total_time_s=f"{r['total_time_s']:.4f}",
-                        m3_enum_time_s=f"{r['enum_time_s']:.4f}",
-                        m3_call_count=r["call_count"],
-                        m3_timed_out=1 if r["timed_out"] else 0,
-                    )
-                    return r
+                  def _exec(source, oid, score, order=None):
+                      r = _run_m3(engine, data_graph_path, tmp_query,
+                                  args.max_embeddings, args.time_limit, custom_order=order)
+                      csv_out.write_row(
+                          dataset=ds, size=q["size"], density=q["density"],
+                          query=q["name"], n_orders=len(orders),
+                          source=source, order_id=oid, m2_score=f"{score:.4f}",
+                          m3_eps=f"{r['eps']:.2f}", m3_embeddings=r["embeddings"],
+                          m3_total_time_s=f"{r['total_time_s']:.4f}",
+                          m3_enum_time_s=f"{r['enum_time_s']:.4f}",
+                          m3_call_count=r["call_count"],
+                          m3_timed_out=1 if r["timed_out"] else 0,
+                      )
+                      return r
 
-                # OPT: M2 top-1
-                opt_entry = ranking[0] if ranking else None
-                opt_r = _exec("OPT", opt_entry["order_id"], opt_entry["score"]) if opt_entry else None
+                  # OPT: M2 top-1
+                  opt_entry = ranking[0] if ranking else None
+                  opt_r = _exec(
+                      "OPT", opt_entry["order_id"], opt_entry["score"],
+                      order=orders[opt_entry["order_id"]],
+                  ) if opt_entry else None
 
-                # TOP5-AVG: M2 top-5
-                top5_eps = []
-                for entry in ranking[:args.top_k]:
-                    r = _exec("TOP5", entry["order_id"], entry["score"])
-                    top5_eps.append(r["eps"])
+                  # TOP5-AVG: M2 top-5
+                  top5_eps = []
+                  for entry in ranking[:args.top_k]:
+                      r = _exec("TOP5", entry["order_id"], entry["score"], order=orders[entry["order_id"]])
+                      top5_eps.append(r["eps"])
 
-                # WORST: M2 last-ranked
-                worst_entry = ranking[-1] if ranking else None
-                worst_r = _exec("WORST", worst_entry["order_id"], worst_entry["score"]) if worst_entry else None
+                  # WORST: M2 last-ranked
+                  worst_entry = ranking[-1] if ranking else None
+                  worst_r = _exec(
+                      "WORST", worst_entry["order_id"], worst_entry["score"],
+                      order=orders[worst_entry["order_id"]],
+                  ) if worst_entry else None
 
-                # RAND-k: random sample from candidate space
-                rand_indices = rng.sample(range(len(orders)), min(args.n_rand, len(orders)))
-                rand_eps = []
-                for idx in rand_indices:
-                    score = res_m2.aggregator.trackers[idx].score
-                    r = _exec("RAND", idx, score)
-                    rand_eps.append(r["eps"])
+                  # RAND-k: random sample from candidate space
+                  rand_indices = rng.sample(range(len(orders)), min(args.n_rand, len(orders)))
+                  rand_eps = []
+                  for idx in rand_indices:
+                      score = res_m2.aggregator.trackers[idx].score
+                      r = _exec("RAND", idx, score, order=orders[idx])
+                      rand_eps.append(r["eps"])
 
-                # DEFAULT: use Survey engine's own ordering (no custom order)
-                default_r = _exec("DEFAULT", -1, 0.0)
+                  # DEFAULT: use Survey engine's own ordering (no custom order)
+                  default_r = _exec("DEFAULT", -1, 0.0)
 
-                if os.path.exists(tmp_query):
-                    os.remove(tmp_query)
+                  if os.path.exists(tmp_query):
+                      os.remove(tmp_query)
 
-                # Summary
-                opt_eps = opt_r["eps"] if opt_r else 0.0
-                top5_avg = sum(top5_eps) / len(top5_eps) if top5_eps else 0.0
-                rand_avg = sum(rand_eps) / len(rand_eps) if rand_eps else 0.0
-                rand_sorted = sorted(rand_eps)
-                rand_median = rand_sorted[len(rand_sorted) // 2] if rand_sorted else 0.0
-                default_eps = default_r["eps"] if default_r else 0.0
-                worst_eps = worst_r["eps"] if worst_r else 0.0
+                  # Summary
+                  opt_eps = opt_r["eps"] if opt_r else 0.0
+                  top5_avg = sum(top5_eps) / len(top5_eps) if top5_eps else 0.0
+                  rand_avg = sum(rand_eps) / len(rand_eps) if rand_eps else 0.0
+                  rand_sorted = sorted(rand_eps)
+                  rand_median = rand_sorted[len(rand_sorted) // 2] if rand_sorted else 0.0
+                  default_eps = default_r["eps"] if default_r else 0.0
+                  worst_eps = worst_r["eps"] if worst_r else 0.0
 
-                opt_time = opt_r["total_time_s"] if opt_r else 0.0
-                # Speedup based on EPS (higher = better)
-                speedup_rand = opt_eps / rand_avg if rand_avg > 0 else float("inf")
-                speedup_default = opt_eps / default_eps if default_eps > 0 else float("inf")
+                  opt_time = opt_r["total_time_s"] if opt_r else 0.0
+                  # Speedup based on EPS (higher = better)
+                  speedup_rand = opt_eps / rand_avg if rand_avg > 0 else float("inf")
+                  speedup_default = opt_eps / default_eps if default_eps > 0 else float("inf")
 
-                csv_summary.write_row(
-                    dataset=ds, size=q["size"], density=q["density"],
-                    query=q["name"],
-                    opt_eps=f"{opt_eps:.2f}",
-                    top5_avg_eps=f"{top5_avg:.2f}",
-                    rand_avg_eps=f"{rand_avg:.2f}",
-                    rand_median_eps=f"{rand_median:.2f}",
-                    default_eps=f"{default_eps:.2f}",
-                    worst_eps=f"{worst_eps:.2f}",
-                    speedup_vs_rand=f"{speedup_rand:.2f}",
-                    speedup_vs_default=f"{speedup_default:.2f}",
-                )
+                  csv_summary.write_row(
+                      dataset=ds, size=q["size"], density=q["density"],
+                      query=q["name"],
+                      opt_eps=f"{opt_eps:.2f}",
+                      top5_avg_eps=f"{top5_avg:.2f}",
+                      rand_avg_eps=f"{rand_avg:.2f}",
+                      rand_median_eps=f"{rand_median:.2f}",
+                      default_eps=f"{default_eps:.2f}",
+                      worst_eps=f"{worst_eps:.2f}",
+                      speedup_vs_rand=f"{speedup_rand:.2f}",
+                      speedup_vs_default=f"{speedup_default:.2f}",
+                  )
+              except QueryTimeout:
+                log.warning("query %s timed out", q["name"])
+                errors.record(dataset=ds, query=q["name"], phase="E1", error="timeout")
               except Exception as e:
                 log.error("query %s failed: %s", q["name"], e, exc_info=True)
                 errors.record(dataset=ds, query=q["name"], phase="E1", error=str(e))

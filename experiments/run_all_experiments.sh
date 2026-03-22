@@ -36,7 +36,11 @@ mkdir -p "$OUTPUT_DIR"
 
 # --- 日志设置：同时输出到终端和日志文件 ---
 LOG_FILE="$OUTPUT_DIR/run_$(date '+%Y%m%d_%H%M%S').log"
-exec > >(tee -a "$LOG_FILE") 2>&1
+if [ "${NO_TEE:-0}" = "1" ]; then
+    exec >> "$LOG_FILE" 2>&1
+else
+    exec > >(tee -a "$LOG_FILE") 2>&1
+fi
 
 FAILED_STEPS=()
 

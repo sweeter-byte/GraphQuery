@@ -16,7 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from experiments.common.config import base_argparser, DATASET_SIZES, ALL_DATASETS
 from experiments.common.graph_loader import discover_queries
 from experiments.common.csv_writer import ExperimentCSV
-from experiments.common.timing import timer
+from experiments.common.timing import timer, query_timeout, QueryTimeout
 from experiments.common.logger import setup_logger, ErrorCounter
 
 from server.services.order_strategies.pruned import generate_orders_pruned
@@ -64,17 +64,35 @@ def main():
 
             for q in queries:
               try:
-                graph = q["graph"]
-                for cf in args.cost_factors:
-                    with timer() as t:
-                        orders = generate_orders_pruned(
-                            graph, cost_factor=cf, max_orders=args.max_orders,
-                        )
-                    csv_out.write_row(
-                        dataset=ds, size=q["size"], density=q["density"],
-                        query=q["name"], cost_factor=f"{cf:.2f}",
-                        n_orders=len(orders), time_s=f"{t.elapsed_s:.6f}",
-                    )
+                with query_timeout(args.timeout):
+                  graph = q["graph"]
+                  # Quick feasibility check: try the most permissive cost_factor.
+                  # If even that returns 0, skip all cost_factors for this query.
+                  max_cf = max(args.cost_factors)
+                  probe = generate_orders_pruned(
+                      graph, cost_factor=max_cf, max_orders=1,
+                  )
+                  skip_all = len(probe) == 0
+                  for cf in args.cost_factors:
+                      if skip_all:
+                          csv_out.write_row(
+                              dataset=ds, size=q["size"], density=q["density"],
+                              query=q["name"], cost_factor=f"{cf:.2f}",
+                              n_orders=0, time_s="0.000000",
+                          )
+                          continue
+                      with timer() as t:
+                          orders = generate_orders_pruned(
+                              graph, cost_factor=cf, max_orders=args.max_orders,
+                          )
+                      csv_out.write_row(
+                          dataset=ds, size=q["size"], density=q["density"],
+                          query=q["name"], cost_factor=f"{cf:.2f}",
+                          n_orders=len(orders), time_s=f"{t.elapsed_s:.6f}",
+                      )
+              except QueryTimeout:
+                log.warning("query %s timed out (%ds)", q["name"], args.timeout)
+                errors.record(dataset=ds, query=q["name"], phase="E7d", error=f"timeout ({args.timeout}s)")
               except Exception as e:
                 log.error("query %s failed: %s", q["name"], e, exc_info=True)
                 errors.record(dataset=ds, query=q["name"], phase="E7d", error=str(e))

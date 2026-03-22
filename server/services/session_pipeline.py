@@ -16,7 +16,6 @@ import logging
 import os
 import threading
 import time
-from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
@@ -26,6 +25,7 @@ from ..models import (
 from ..config import resolve_schedule_config
 from ..logging_config import set_session_id, clear_session_id
 from .estimator_adapter import EstimatorAdapter
+from .execution_service import execute_downstream_query
 from .order_strategies import generate_orders as strategic_generate_orders
 from .prefix_builder import build_prefix_subgraphs
 from .score_aggregator import ScoreAggregator
@@ -51,6 +51,7 @@ async def run_session_pipeline(
     # Set session ID in contextvars so ALL log lines are auto-tagged
     token = set_session_id(session.session_id)
     pipeline_start = time.time()
+    use_mock_estimator = getattr(adapter, "_estimator", None) is None
 
     try:
         # --- Step 1: Index loading ---
@@ -67,9 +68,12 @@ async def run_session_pipeline(
 
         # Load dataset (idempotent -- skips if already loaded)
         loop = asyncio.get_event_loop()
-        await loop.run_in_executor(
-            None, adapter.load_dataset, session.dataset_id, dataset_root
-        )
+        if use_mock_estimator:
+            adapter.load_dataset(session.dataset_id, dataset_root)
+        else:
+            await loop.run_in_executor(
+                None, adapter.load_dataset, session.dataset_id, dataset_root
+            )
 
         await aggregator.push_event(SSEEvent(
             event="index_loaded",
@@ -253,10 +257,18 @@ async def run_session_pipeline(
                         finally:
                             clear_session_id(_tok)
 
-                    future = loop.run_in_executor(
-                        executor, run_estimation, prefix, omp_threads, order_idx, level
-                    )
-                    wrapped.append(_wait(future, order_idx))
+                    if use_mock_estimator:
+                        wrapped.append(
+                            asyncio.sleep(
+                                0,
+                                result=(order_idx, run_estimation(prefix, omp_threads, order_idx, level)),
+                            )
+                        )
+                    else:
+                        future = loop.run_in_executor(
+                            executor, run_estimation, prefix, omp_threads, order_idx, level
+                        )
+                        wrapped.append(_wait(future, order_idx))
 
                 # Process cached results first (no C++ call needed)
                 for order_idx, c_hat in cached_results:
@@ -358,7 +370,11 @@ async def run_session_pipeline(
                 finally:
                     clear_session_id(_tok)
 
-            result = await loop.run_in_executor(None, _estimate_last, first_prefix, omp_threads)
+            if use_mock_estimator:
+                result = _estimate_last(first_prefix, omp_threads)
+            else:
+                with ThreadPoolExecutor(max_workers=1) as executor:
+                    result = await loop.run_in_executor(executor, _estimate_last, first_prefix, omp_threads)
             shared_c_hat = result.get("estimated_cardinality", 0.0)
 
             est_log.info(
@@ -413,44 +429,36 @@ async def run_session_pipeline(
 
         # --- Step 5: Run downstream execution (optional) ---
         execution_result = None
+        best_order_list = (
+            aggregator.trackers[aggregator.best_order_id].order
+            if aggregator.best_order_id is not None else None
+        )
         if session.run_execution:
             try:
-                from .graph_format_converter import serialize_graph_to_file
-                from .survey_engine_adapter import get_survey_engine
-
                 await aggregator.push_event(SSEEvent(
                     event="execution_started",
                     data={"session_id": session.session_id},
                 ))
 
-                tmp_query_path = serialize_graph_to_file(graph)
+                if use_mock_estimator:
+                    execution_result = execute_downstream_query(
+                        dataset_root=dataset_root,
+                        dataset_id=session.dataset_id,
+                        graph=graph,
+                        execution_config=session.execution_config,
+                        custom_order=best_order_list,
+                    )
+                else:
+                    execution_result = await asyncio.to_thread(
+                        execute_downstream_query,
+                        dataset_root=dataset_root,
+                        dataset_id=session.dataset_id,
+                        graph=graph,
+                        execution_config=session.execution_config,
+                        custom_order=best_order_list,
+                    )
 
-                data_graph_path = str(
-                    Path(dataset_root) / session.dataset_id / f"{session.dataset_id}.graph"
-                )
-
-                exec_kwargs: dict = {}
-                cfg = session.execution_config or {}
-                for key in ("filter_type", "order_type", "engine_type"):
-                    if key in cfg:
-                        exec_kwargs[key] = cfg[key]
-                for key in ("max_embeddings", "time_limit"):
-                    if key in cfg:
-                        exec_kwargs[key] = int(cfg[key])
-
-                engine = get_survey_engine()
-                execution_result = await loop.run_in_executor(
-                    None,
-                    lambda: engine.execute(
-                        data_graph_path, tmp_query_path, **exec_kwargs,
-                    ),
-                )
-
-                execution_result.pop("stdout", None)
                 session.execution_result = execution_result
-
-                if os.path.exists(tmp_query_path):
-                    os.remove(tmp_query_path)
 
                 await aggregator.push_event(SSEEvent(
                     event="execution_completed",
@@ -486,11 +494,6 @@ async def run_session_pipeline(
         session.completed_at = time.time()
         total_elapsed = time.time() - pipeline_start
 
-        best_order_list = (
-            aggregator.trackers[aggregator.best_order_id].order
-            if aggregator.best_order_id is not None else None
-        )
-
         session_log.info(
             "SESSION_COMPLETED | best_order_id=%s | best_order=%s | "
             "best_score=%s | orders_evaluated=%d | total_time=%.3fs",
@@ -503,7 +506,7 @@ async def run_session_pipeline(
             "best_order_id": aggregator.best_order_id,
             "best_order": best_order_list,
             "best_score": aggregator.best_score,
-            "total_orders_evaluated": len(orders),
+            "total_orders": len(orders),
         }
         if execution_result:
             completion_data["execution_result"] = {

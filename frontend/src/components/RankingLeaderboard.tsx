@@ -72,7 +72,7 @@ export function RankingLeaderboard({ ranking, bestOrderId, isCompleted, activeOr
 
       <LayoutGroup>
         <AnimatePresence mode="popLayout">
-          {displayedRanking.map((r, idx) => {
+          {displayedRanking.map((r) => {
             const isBest = r.order_id === bestOrderId;
             return (
               <motion.div
@@ -85,10 +85,8 @@ export function RankingLeaderboard({ ranking, bestOrderId, isCompleted, activeOr
                 transition={{
                   layout: {
                     type: 'spring',
-                    stiffness: 200,
-                    damping: 25,
-                    // Stagger: rows lower in the list animate slightly later
-                    delay: idx * 0.03,
+                    stiffness: 350,
+                    damping: 30,
                   },
                   opacity: { duration: 0.2 },
                 }}

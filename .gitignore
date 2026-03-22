@@ -45,3 +45,6 @@ frontend/dist/
 **/*.bin
 **/*.index
 logs/
+
+AGENTS.md
+CLAUDE.md

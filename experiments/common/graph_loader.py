@@ -9,9 +9,20 @@ import sys, os
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from server.models import NormalizedGraph, Vertex, Edge
+from server.services.order_strategies.pruned import generate_orders_pruned
+from server.services.order_strategies.baseline import generate_orders_baseline
 from .config import DATASET_ROOT, DATASET_SIZES
 
 _log = logging.getLogger("exp.graph_loader")
+
+
+def generate_orders(graph: NormalizedGraph, **kwargs) -> list[list[int]]:
+    """Generate orders: try pruned first, fallback to baseline if empty."""
+    orders = generate_orders_pruned(graph, **kwargs)
+    if not orders:
+        _log.info("pruned returned 0 orders (V=%d), falling back to baseline", graph.num_vertices)
+        orders = generate_orders_baseline(graph)
+    return orders
 
 
 def load_query_graph(filepath: str | Path) -> NormalizedGraph:

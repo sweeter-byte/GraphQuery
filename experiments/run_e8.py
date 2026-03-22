@@ -18,7 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from experiments.common.config import base_argparser, DATASET_SIZES
 from experiments.common.graph_loader import discover_queries
 from experiments.common.csv_writer import ExperimentCSV
-from experiments.common.timing import timer
+from experiments.common.timing import timer, query_timeout, QueryTimeout
 from experiments.common.stats import spearman_corr
 from experiments.common.m2_runner import run_m2
 from experiments.common.logger import setup_logger, ErrorCounter
@@ -98,102 +98,106 @@ def main():
 
             for q in queries:
               try:
-                graph = q["graph"]
+                with query_timeout(args.timeout):
+                    graph = q["graph"]
 
-                # Generate orders with both strategies for E8e
-                with timer() as t_m1_bl:
-                    orders_bl = generate_orders_baseline(graph)
-                with timer() as t_m1_pr:
-                    orders_pr = generate_orders_pruned(graph)
+                    # Generate orders with both strategies for E8e
+                    with timer() as t_m1_bl:
+                        orders_bl = generate_orders_baseline(graph)
+                    with timer() as t_m1_pr:
+                        orders_pr = generate_orders_pruned(graph)
 
-                if not orders_pr:
-                    continue
+                    if not orders_pr:
+                        continue
 
-                # --- E8a+E8b: R1/R4 ablation (using pruned orders) ---
-                ablation_results = {}
-                for cfg_name, (r1, r4) in DEDUP_CONFIGS.items():
-                    with timer() as t_cfg:
-                        res = run_m2(
-                            graph, orders_pr, adapter,
-                            prefix_eval_mode="full",
-                            enable_r1=r1, enable_r4=r4,
+                    # --- E8a+E8b: R1/R4 ablation (using pruned orders) ---
+                    ablation_results = {}
+                    for cfg_name, (r1, r4) in DEDUP_CONFIGS.items():
+                        with timer() as t_cfg:
+                            res = run_m2(
+                                graph, orders_pr, adapter,
+                                prefix_eval_mode="full",
+                                enable_r1=r1, enable_r4=r4,
+                            )
+                        ablation_results[cfg_name] = (res, t_cfg.elapsed_s)
+                        hit_total = res.cache_hits + res.cache_misses
+                        csv_e8a.write_row(
+                            dataset=ds, size=q["size"], density=q["density"],
+                            query=q["name"], n_orders=len(orders_pr),
+                            config=cfg_name, cpp_calls=res.n_cpp_calls,
+                            cache_hits=res.cache_hits, cache_misses=res.cache_misses,
+                            cache_hit_rate=f"{res.cache_hits / hit_total:.4f}" if hit_total > 0 else "0.0000",
+                            m2_time_s=f"{t_cfg.elapsed_s:.6f}",
                         )
-                    ablation_results[cfg_name] = (res, t_cfg.elapsed_s)
-                    hit_total = res.cache_hits + res.cache_misses
-                    csv_e8a.write_row(
+
+                    # --- E8c: ranking consistency (full vs R1+R4) ---
+                    res_full = ablation_results["full"][0]
+                    res_opt = ablation_results["R1+R4"][0]
+
+                    full_best_id = res_full.aggregator.best_order_id
+                    opt_best_id = res_opt.aggregator.best_order_id
+                    full_top1 = res_full.aggregator.trackers[full_best_id].order if full_best_id is not None else []
+                    opt_top1 = res_opt.aggregator.trackers[opt_best_id].order if opt_best_id is not None else []
+                    top1_match = 1 if full_top1 == opt_top1 else 0
+
+                    # Spearman correlation on all order scores
+                    full_scores = [res_full.aggregator.trackers[i].score for i in range(len(orders_pr))]
+                    opt_scores = [res_opt.aggregator.trackers[i].score for i in range(len(orders_pr))]
+                    rho, p_val = spearman_corr(full_scores, opt_scores)
+
+                    # Max score diff and scores_identical
+                    max_diff = 0.0
+                    scores_identical = 1
+                    for i in range(len(orders_pr)):
+                        diff = abs(full_scores[i] - opt_scores[i])
+                        max_diff = max(max_diff, diff)
+                        if diff > 1e-6:
+                            scores_identical = 0
+
+                    # Top-5 overlap
+                    full_topk = [t["order_id"] for t in res_full.aggregator.get_top_k()[:5]]
+                    opt_topk = [t["order_id"] for t in res_opt.aggregator.get_top_k()[:5]]
+                    top5_overlap = len(set(full_topk) & set(opt_topk))
+
+                    csv_e8c.write_row(
                         dataset=ds, size=q["size"], density=q["density"],
                         query=q["name"], n_orders=len(orders_pr),
-                        config=cfg_name, cpp_calls=res.n_cpp_calls,
-                        cache_hits=res.cache_hits, cache_misses=res.cache_misses,
-                        cache_hit_rate=f"{res.cache_hits / hit_total:.4f}" if hit_total > 0 else "0.0000",
-                        m2_time_s=f"{t_cfg.elapsed_s:.6f}",
+                        top1_match=top1_match, scores_identical=scores_identical,
+                        spearman_rho=f"{rho:.6f}", spearman_p=f"{p_val:.6f}",
+                        top5_overlap=top5_overlap, max_score_diff=f"{max_diff:.8f}",
                     )
 
-                # --- E8c: ranking consistency (full vs R1+R4) ---
-                res_full = ablation_results["full"][0]
-                res_opt = ablation_results["R1+R4"][0]
-
-                full_best_id = res_full.aggregator.best_order_id
-                opt_best_id = res_opt.aggregator.best_order_id
-                full_top1 = res_full.aggregator.trackers[full_best_id].order if full_best_id is not None else []
-                opt_top1 = res_opt.aggregator.trackers[opt_best_id].order if opt_best_id is not None else []
-                top1_match = 1 if full_top1 == opt_top1 else 0
-
-                # Spearman correlation on all order scores
-                full_scores = [res_full.aggregator.trackers[i].score for i in range(len(orders_pr))]
-                opt_scores = [res_opt.aggregator.trackers[i].score for i in range(len(orders_pr))]
-                rho, p_val = spearman_corr(full_scores, opt_scores)
-
-                # Max score diff and scores_identical
-                max_diff = 0.0
-                scores_identical = 1
-                for i in range(len(orders_pr)):
-                    diff = abs(full_scores[i] - opt_scores[i])
-                    max_diff = max(max_diff, diff)
-                    if diff > 1e-6:
-                        scores_identical = 0
-
-                # Top-5 overlap
-                full_topk = [t["order_id"] for t in res_full.aggregator.get_top_k()[:5]]
-                opt_topk = [t["order_id"] for t in res_opt.aggregator.get_top_k()[:5]]
-                top5_overlap = len(set(full_topk) & set(opt_topk))
-
-                csv_e8c.write_row(
-                    dataset=ds, size=q["size"], density=q["density"],
-                    query=q["name"], n_orders=len(orders_pr),
-                    top1_match=top1_match, scores_identical=scores_identical,
-                    spearman_rho=f"{rho:.6f}", spearman_p=f"{p_val:.6f}",
-                    top5_overlap=top5_overlap, max_score_diff=f"{max_diff:.8f}",
-                )
-
-                # --- E8e: 4-pipeline comparison ---
-                pipelines = [
-                    ("A_bl_full", "baseline", "full", orders_bl, t_m1_bl, False, False),
-                    ("B_bl_opt",  "baseline", "R1+R4", orders_bl, t_m1_bl, True, True),
-                    ("C_pr_full", "pruned",   "full", orders_pr, t_m1_pr, False, False),
-                    ("D_pr_opt",  "pruned",   "R1+R4", orders_pr, t_m1_pr, True, True),
-                ]
-                for pname, m1_strat, m2_mode, orders, t_m1, r1, r4 in pipelines:
-                    if not orders:
-                        continue
-                    with timer() as t_m2:
-                        res = run_m2(
-                            graph, orders, adapter,
-                            prefix_eval_mode="full",
-                            enable_r1=r1, enable_r4=r4,
+                    # --- E8e: 4-pipeline comparison ---
+                    pipelines = [
+                        ("A_bl_full", "baseline", "full", orders_bl, t_m1_bl, False, False),
+                        ("B_bl_opt",  "baseline", "R1+R4", orders_bl, t_m1_bl, True, True),
+                        ("C_pr_full", "pruned",   "full", orders_pr, t_m1_pr, False, False),
+                        ("D_pr_opt",  "pruned",   "R1+R4", orders_pr, t_m1_pr, True, True),
+                    ]
+                    for pname, m1_strat, m2_mode, orders, t_m1, r1, r4 in pipelines:
+                        if not orders:
+                            continue
+                        with timer() as t_m2:
+                            res = run_m2(
+                                graph, orders, adapter,
+                                prefix_eval_mode="full",
+                                enable_r1=r1, enable_r4=r4,
+                            )
+                        csv_e8e.write_row(
+                            dataset=ds, size=q["size"], density=q["density"],
+                            query=q["name"], pipeline=pname,
+                            m1_strategy=m1_strat, m2_mode=m2_mode,
+                            n_orders=len(orders),
+                            m1_time_s=f"{t_m1.elapsed_s:.6f}",
+                            m2_time_s=f"{t_m2.elapsed_s:.6f}",
+                            total_plan_s=f"{t_m1.elapsed_s + t_m2.elapsed_s:.6f}",
+                            cpp_calls=res.n_cpp_calls,
+                            cache_hits=res.cache_hits,
+                            r3_skips=res.r3_skips,
                         )
-                    csv_e8e.write_row(
-                        dataset=ds, size=q["size"], density=q["density"],
-                        query=q["name"], pipeline=pname,
-                        m1_strategy=m1_strat, m2_mode=m2_mode,
-                        n_orders=len(orders),
-                        m1_time_s=f"{t_m1.elapsed_s:.6f}",
-                        m2_time_s=f"{t_m2.elapsed_s:.6f}",
-                        total_plan_s=f"{t_m1.elapsed_s + t_m2.elapsed_s:.6f}",
-                        cpp_calls=res.n_cpp_calls,
-                        cache_hits=res.cache_hits,
-                        r3_skips=res.r3_skips,
-                    )
+              except QueryTimeout:
+                log.error("query %s timed out", q["name"])
+                errors.record(dataset=ds, query=q["name"], phase="E8", error="timeout")
               except Exception as e:
                 log.error("query %s failed: %s", q["name"], e, exc_info=True)
                 errors.record(dataset=ds, query=q["name"], phase="E8", error=str(e))

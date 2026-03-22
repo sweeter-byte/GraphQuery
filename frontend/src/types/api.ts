@@ -45,6 +45,8 @@ export interface SessionCreateRequest {
   query_graph: QueryGraph;
   beam_width?: number | null;
   schedule_config?: ScheduleConfig;
+  run_execution?: boolean;
+  execution_config?: Record<string, unknown>;
 }
 
 export interface SessionCreateResponse {
@@ -105,4 +107,22 @@ export interface SessionCompletedData {
   best_order: number[];
   best_score: number;
   total_orders: number;
+  execution_result?: SurveyExecutionResult;
+}
+
+export interface SurveyExecutionResult {
+  embedding_count: number;
+  total_time_seconds: number;
+  enumeration_time_seconds?: number;
+  call_count?: number;
+  eps: number;
+  timed_out?: boolean;
+}
+
+export interface ExecuteSessionResponse {
+  session_id: string;
+  status: SessionStatus;
+  best_order_id: number | null;
+  best_order: number[] | null;
+  execution_result: SurveyExecutionResult;
 }

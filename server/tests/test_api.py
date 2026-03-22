@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import subprocess
+import sys
 import time
 
 import pytest
@@ -20,6 +22,7 @@ from fastapi.testclient import TestClient
 from server.main import app
 from server.models import (
     QueryGraph, Vertex, Edge, NormalizedGraph, PrefixPayload,
+    OrderState, Session, SessionStatus,
 )
 from server.services.query_validator import validate_and_normalize, ValidationError
 from server.services.order_generator import (
@@ -101,6 +104,32 @@ def _make_normalized_path4() -> NormalizedGraph:
             Edge(source=0, target=1, label=0),
             Edge(source=1, target=2, label=0),
             Edge(source=2, target=3, label=0),
+        ],
+    )
+
+
+def _make_edge_query() -> QueryGraph:
+    return QueryGraph(
+        vertices=[
+            Vertex(id=0, label=0),
+            Vertex(id=1, label=0),
+        ],
+        edges=[
+            Edge(source=0, target=1, label=0),
+        ],
+    )
+
+
+def _make_normalized_edge() -> NormalizedGraph:
+    return NormalizedGraph(
+        num_vertices=2,
+        num_edges=1,
+        vertices=[
+            Vertex(id=0, label=0),
+            Vertex(id=1, label=0),
+        ],
+        edges=[
+            Edge(source=0, target=1, label=0),
         ],
     )
 
@@ -468,6 +497,51 @@ class TestSessionAPI:
 # =============================================================================
 
 @pytest.mark.asyncio
+async def test_execute_completed_session_passes_best_order(monkeypatch):
+    from server.routes.sessions import _get_storage, execute_session
+
+    storage = _get_storage()
+    session = Session(
+        dataset_id="yeast",
+        query_graph=_make_triangle_query(),
+        normalized_graph=_make_normalized_triangle(),
+        status=SessionStatus.COMPLETED,
+        best_order_id=1,
+        orders=[
+            OrderState(order_id=0, order=[0, 1, 2]),
+            OrderState(order_id=1, order=[2, 1, 0]),
+        ],
+        execution_config={"filter_type": "CFL", "engine_type": "LFTJ"},
+    )
+    storage.create_session(session)
+
+    captured: dict[str, object] = {}
+
+    def fake_execute_downstream_query(*, dataset_root, dataset_id, graph, execution_config=None, custom_order=None):
+        captured["dataset_root"] = dataset_root
+        captured["dataset_id"] = dataset_id
+        captured["graph"] = graph
+        captured["execution_config"] = execution_config
+        captured["custom_order"] = custom_order
+        return {
+            "embedding_count": 7,
+            "total_time_seconds": 0.25,
+            "eps": 28.0,
+        }
+
+    monkeypatch.setattr(
+        "server.routes.sessions.execute_downstream_query",
+        fake_execute_downstream_query,
+    )
+
+    body = await execute_session(session.session_id)
+    assert body["best_order_id"] == 1
+    assert body["best_order"] == [2, 1, 0]
+    assert body["execution_result"]["embedding_count"] == 7
+    assert captured["custom_order"] == [2, 1, 0]
+    assert captured["execution_config"] == session.execution_config
+
+@pytest.mark.asyncio
 async def test_full_session_with_sse():
     from server.models import DatasetInfo, IndexStatus
     from server.routes.sessions import _get_storage
@@ -618,3 +692,85 @@ async def test_full_session_triangle():
         result = resp.json()
         assert len(result["orders"]) == 6  # all 6 triangle permutations
         assert result["best_score"] > 0
+
+
+def test_pipeline_auto_execution_passes_best_order():
+    script = r"""
+import asyncio
+import json
+from server.models import Session, QueryGraph, Vertex, Edge, NormalizedGraph
+from server.services.score_aggregator import ScoreAggregator
+from server.services.session_pipeline import run_session_pipeline
+import server.services.session_pipeline as sp
+
+class DummyAdapter:
+    _estimator = None
+
+    def load_dataset(self, dataset_id: str, dataset_root: str = "dataset") -> None:
+        return None
+
+captured = {}
+
+sp.strategic_generate_orders = lambda graph, beam_width=None, strategy="baseline": [[1, 0]]
+
+def fake_execute_downstream_query(*, dataset_root, dataset_id, graph, execution_config=None, custom_order=None):
+    captured["dataset_root"] = dataset_root
+    captured["dataset_id"] = dataset_id
+    captured["execution_config"] = execution_config
+    captured["custom_order"] = custom_order
+    return {
+        "embedding_count": 5,
+        "total_time_seconds": 0.5,
+        "eps": 10.0,
+    }
+
+sp.execute_downstream_query = fake_execute_downstream_query
+
+async def main():
+    session = Session(
+        dataset_id="yeast",
+        query_graph=QueryGraph(
+            vertices=[Vertex(id=0, label=0), Vertex(id=1, label=0)],
+            edges=[Edge(source=0, target=1, label=0)],
+        ),
+        normalized_graph=NormalizedGraph(
+            num_vertices=2,
+            num_edges=1,
+            vertices=[Vertex(id=0, label=0), Vertex(id=1, label=0)],
+            edges=[Edge(source=0, target=1, label=0)],
+        ),
+        run_execution=True,
+        execution_config={"filter_type": "CFL", "engine_type": "LFTJ"},
+    )
+    aggregator = ScoreAggregator()
+    await run_session_pipeline(session, DummyAdapter(), aggregator)
+    print(json.dumps({
+        "status": session.status.value,
+        "best_order_id": session.best_order_id,
+        "execution_result": session.execution_result,
+        "captured_order": captured.get("custom_order"),
+        "captured_config": captured.get("execution_config"),
+    }))
+
+asyncio.run(main())
+"""
+    proc = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd="/home/ranmaoyin/graph_query/Fastest-par",
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=True,
+    )
+    lines = [line for line in proc.stdout.splitlines() if line.strip()]
+    payload = json.loads(lines[-1])
+
+    assert payload["status"] == "completed"
+    assert payload["best_order_id"] == 0
+    assert payload["execution_result"] == {
+        "embedding_count": 5,
+        "total_time_seconds": 0.5,
+        "eps": 10.0,
+    }
+    assert payload["captured_order"] == [1, 0]
+    assert payload["captured_config"] == {"filter_type": "CFL", "engine_type": "LFTJ"}

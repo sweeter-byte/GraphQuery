@@ -1,4 +1,4 @@
-# GraphQuery 升级优化任务清单 (V2)
+# GraphQuery 升级优化任务清单
 
 本文档将整个系统的升级计划拆解为四个独立且互不干扰的核心开发阶段，以方便按模块逐步执行与验收。
 
@@ -11,8 +11,8 @@
 **详细要点：**
 1. **研究转换：** 精读论文 *"A Comprehensive Survey and Experimental Study of Subgraph Matching"* 中的 EPS 体系，理清在给定 Data Graph 和 Query 前缀子图条件下计算预期探索开销的具体公式。
 2. **算法重构：** 在 Python 端的 `order_generator.py` 和 `CandidateFilter.h` C++ 端调整代价得分的积累函数，令 $cost(Sequence) = \sum EPS$。
-3. **真实引擎对比：** 构建独立测试脚本 (`server/tests/`)，把我们生成的任意搜索序列导入 DAF 匹配引擎进行物理运行记录计时。
-4. **效果论证图表:** 写一段数据搜集与绘图代码，自动生成【序列EPS预估值 vs 真实DAF耗时】的回归散点图，用以写入论文并提供数据支撑。
+3. **真实引擎对比：** 构建独立测试脚本 (`server/tests/`)，把我们生成的任意搜索序列导入 Survey 下游匹配引擎进行物理运行记录计时。
+4. **效果论证图表:** 写一段数据搜集与绘图代码，自动生成【序列EPS预估值 vs 真实 Survey 耗时】的回归散点图，用以写入论文并提供数据支撑。
 
 ---
 

@@ -1,4 +1,9 @@
-import type { DatasetInfo, SessionCreateRequest, SessionCreateResponse } from '../types/api';
+import type {
+  DatasetInfo,
+  ExecuteSessionResponse,
+  SessionCreateRequest,
+  SessionCreateResponse,
+} from '../types/api';
 import { frontendLogger as log } from './logger';
 
 const BASE = '/api';
@@ -39,8 +44,8 @@ export async function fetchSessionResult(sessionId: string) {
   return fetchJSON<Record<string, unknown>>(`/sessions/${sessionId}/result`);
 }
 
-export async function executeSession(sessionId: string) {
-  return fetchJSON<Record<string, unknown>>(`/sessions/${sessionId}/execute`, {
+export async function executeSession(sessionId: string): Promise<ExecuteSessionResponse> {
+  return fetchJSON<ExecuteSessionResponse>(`/sessions/${sessionId}/execute`, {
     method: 'POST',
   });
 }

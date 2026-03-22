@@ -2,7 +2,7 @@
 Graph Format Converter.
 
 Serializes a NormalizedGraph or PrefixPayload into the `.graph` text file
-format used by SubgraphMatchingSurvey (and DAF):
+format used by SubgraphMatchingSurvey:
 
     t <num_vertices> <num_edges>
     v <id> <label> <degree>

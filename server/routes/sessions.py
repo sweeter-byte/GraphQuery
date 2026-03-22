@@ -16,6 +16,7 @@ from ..models import (
 from ..storage import Storage
 from ..services.query_validator import validate_and_normalize, ValidationError
 from ..services.estimator_adapter import get_estimator_adapter
+from ..services.execution_service import execute_downstream_query
 from ..services.score_aggregator import ScoreAggregator
 from ..services.session_pipeline import run_session_pipeline
 from ..config import get_config
@@ -231,5 +232,62 @@ async def get_result(session_id: str):
             }
             for o in session.orders
         ],
+        "execution_result": session.execution_result,
+    }
+
+
+@router.post("/{session_id}/execute", status_code=202)
+async def execute_session(session_id: str):
+    """Execute the best-ranked order on the downstream Survey engine."""
+    storage = _get_storage()
+    session = storage.get_session(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail=f"Session '{session_id}' not found")
+
+    if session.status == SessionStatus.FAILED:
+        return JSONResponse(
+            status_code=500,
+            content={"error": session.error},
+        )
+
+    if session.status != SessionStatus.COMPLETED:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Session not completed (status: {session.status.value})",
+        )
+
+    if session.execution_result is None:
+        graph = session.normalized_graph
+        if graph is None:
+            raise HTTPException(status_code=500, detail="Normalized query graph missing")
+        if session.best_order_id is None:
+            raise HTTPException(status_code=409, detail="Best order not available")
+
+        best_order = next(
+            (order_state.order for order_state in session.orders if order_state.order_id == session.best_order_id),
+            None,
+        )
+        if best_order is None:
+            raise HTTPException(status_code=500, detail="Best order state missing")
+
+        config = get_config()
+        session.execution_result = await asyncio.to_thread(
+            execute_downstream_query,
+            dataset_root=config.dataset_root,
+            dataset_id=session.dataset_id,
+            graph=graph,
+            execution_config=session.execution_config,
+            custom_order=best_order,
+        )
+        storage.update_session(session)
+
+    return {
+        "session_id": session.session_id,
+        "status": session.status.value,
+        "best_order_id": session.best_order_id,
+        "best_order": next(
+            (order_state.order for order_state in session.orders if order_state.order_id == session.best_order_id),
+            None,
+        ),
         "execution_result": session.execution_result,
     }

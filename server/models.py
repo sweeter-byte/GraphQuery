@@ -180,6 +180,7 @@ class Session(BaseModel):
     order_strategy: str = "baseline"  # "baseline" | "pruned"
     prefix_eval_mode: str = "optimized"  # "optimized" (R1+R4) | "full" (baseline)
     weight_config: Optional[WeightConfigModel] = None  # None = uniform (baseline)
+    early_stop_config: Optional[EarlyStopConfigModel] = None  # None = disabled (baseline)
     orders: list[OrderState] = Field(default_factory=list)
     best_order_id: int | None = None
     best_score: float | None = None

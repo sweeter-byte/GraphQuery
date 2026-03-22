@@ -14,11 +14,11 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from experiments.common.config import base_argparser, DATASET_SIZES
-from experiments.common.graph_loader import discover_queries
+from experiments.common.graph_loader import discover_queries, generate_orders
 from experiments.common.csv_writer import ExperimentCSV
 from experiments.common.logger import setup_logger, ErrorCounter
+from experiments.common.timing import query_timeout, QueryTimeout
 
-from server.services.order_strategies.pruned import generate_orders_pruned
 from server.services.prefix_builder import build_prefix_subgraphs
 
 
@@ -54,34 +54,38 @@ def main():
 
             for q in queries:
               try:
-                graph = q["graph"]
-                orders = generate_orders_pruned(graph)
-                if not orders:
-                    continue
+                with query_timeout(args.timeout):
+                    graph = q["graph"]
+                    orders = generate_orders(graph)
+                    if not orders:
+                        continue
 
-                n = graph.num_vertices
-                # Pre-build all prefix payloads
-                all_prefixes = {
-                    i: build_prefix_subgraphs(graph, order)
-                    for i, order in enumerate(orders)
-                }
+                    n = graph.num_vertices
+                    # Pre-build all prefix payloads
+                    all_prefixes = {
+                        i: build_prefix_subgraphs(graph, order)
+                        for i, order in enumerate(orders)
+                    }
 
-                for level in range(n):
-                    # Compute unique prefix keys at this level
-                    prefix_keys = set()
-                    for i, order in enumerate(orders):
-                        prefix_keys.add(frozenset(order[: level + 1]))
+                    for level in range(n):
+                        # Compute unique prefix keys at this level
+                        prefix_keys = set()
+                        for i, order in enumerate(orders):
+                            prefix_keys.add(frozenset(order[: level + 1]))
 
-                    total = len(orders)
-                    unique = len(prefix_keys)
-                    sharing = 1.0 - (unique / total) if total > 0 else 0.0
+                        total = len(orders)
+                        unique = len(prefix_keys)
+                        sharing = 1.0 - (unique / total) if total > 0 else 0.0
 
-                    csv_out.write_row(
-                        dataset=ds, size=q["size"], density=q["density"],
-                        query=q["name"], n_orders=len(orders), level=level,
-                        total_prefixes=total, unique_prefixes=unique,
-                        sharing_ratio=f"{sharing:.4f}",
-                    )
+                        csv_out.write_row(
+                            dataset=ds, size=q["size"], density=q["density"],
+                            query=q["name"], n_orders=len(orders), level=level,
+                            total_prefixes=total, unique_prefixes=unique,
+                            sharing_ratio=f"{sharing:.4f}",
+                        )
+              except QueryTimeout:
+                log.error("query %s timed out", q["name"])
+                errors.record(dataset=ds, query=q["name"], phase="E8d", error="timeout")
               except Exception as e:
                 log.error("query %s failed: %s", q["name"], e, exc_info=True)
                 errors.record(dataset=ds, query=q["name"], phase="E8d", error=str(e))

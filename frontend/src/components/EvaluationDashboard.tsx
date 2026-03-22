@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { motion } from 'framer-motion';
 import { Zap, Turtle, Download } from 'lucide-react';
 import { StatusBadge } from './StatusBadge';
@@ -9,7 +9,7 @@ import { SubgraphFlowViewer } from './SubgraphFlowViewer';
 import { executeSession } from '../lib/api';
 import { frontendLogger as log } from '../lib/logger';
 import type { StreamState } from '../hooks/useSessionStream';
-import type { OrderRanking, QueryGraph } from '../types/api';
+import type { OrderRanking, QueryGraph, SurveyExecutionResult } from '../types/api';
 
 interface Props {
   sessionId: string;
@@ -22,8 +22,14 @@ interface Props {
 export function EvaluationDashboard({ sessionId, sourceGraph, stream, language, theme }: Props) {
   const [slowMotion, setSlowMotionLocal] = useState(false);
   const [executing, setExecuting] = useState(false);
-  const [execResult, setExecResult] = useState<any>(null);
+  const [execResult, setExecResult] = useState<SurveyExecutionResult | null>(null);
   const [selectedFlowRanking, setSelectedFlowRanking] = useState<OrderRanking | null>(null);
+
+  useEffect(() => {
+    if (stream.completedData?.execution_result) {
+      setExecResult(stream.completedData.execution_result);
+    }
+  }, [stream.completedData]);
 
   const toggleSlowMotion = () => {
     const next = !slowMotion;
@@ -34,13 +40,13 @@ export function EvaluationDashboard({ sessionId, sourceGraph, stream, language, 
   const handleExecute = async () => {
     setExecuting(true);
     setExecResult(null);
-    log.info('EXECUTION', `Triggering DAF execution for session ${sessionId}`);
+    log.info('EXECUTION', `Triggering Survey execution for session ${sessionId}`);
     try {
       const res = await executeSession(sessionId);
-      log.info('EXECUTION', `DAF execution complete`, res.results);
-      setExecResult(res.results);
+      log.info('EXECUTION', 'Survey execution complete', res.execution_result);
+      setExecResult(res.execution_result);
     } catch (e) {
-      log.error('EXECUTION', `DAF execution failed: ${e}`);
+      log.error('EXECUTION', `Survey execution failed: ${e}`);
       alert(`Execution failed: ${e}`);
     } finally {
       setExecuting(false);
@@ -178,26 +184,26 @@ export function EvaluationDashboard({ sessionId, sourceGraph, stream, language, 
                 <div className="grid grid-cols-3 gap-2 text-center">
                   <div className="bg-white dark:bg-slate-800/50 rounded-md p-2 border border-slate-100 dark:border-slate-700/50 shadow-sm">
                     <div className="text-[10px] uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-1">
-                      {language === 'zh' ? '匹配数量' : 'Matches'}
+                      {language === 'zh' ? '嵌入数量' : 'Embeddings'}
                     </div>
                     <div className="text-lg font-bold text-slate-700 dark:text-slate-200">
-                      {execResult.results?.num_matches?.toLocaleString() || '0'}
+                      {execResult.embedding_count.toLocaleString()}
                     </div>
                   </div>
                   <div className="bg-white dark:bg-slate-800/50 rounded-md p-2 border border-slate-100 dark:border-slate-700/50 shadow-sm">
                     <div className="text-[10px] uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-1">
-                      {language === 'zh' ? '总耗时' : 'Time (ms)'}
+                      {language === 'zh' ? '总耗时 (s)' : 'Total Time (s)'}
                     </div>
                     <div className="text-lg font-bold text-emerald-600 dark:text-emerald-400">
-                      {execResult.results?.execution_time_ms?.toFixed(2) || '0.00'}
+                      {execResult.total_time_seconds.toFixed(4)}
                     </div>
                   </div>
                   <div className="bg-white dark:bg-slate-800/50 rounded-md p-2 border border-slate-100 dark:border-slate-700/50 shadow-sm">
                     <div className="text-[10px] uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-1">
-                      {language === 'zh' ? '递归调用' : 'Rec. Calls'}
+                      {language === 'zh' ? 'EPS' : 'EPS'}
                     </div>
                     <div className="text-lg font-bold text-slate-700 dark:text-slate-200">
-                      {execResult.results?.recursive_calls?.toLocaleString() || '0'}
+                      {execResult.eps.toLocaleString(undefined, { maximumFractionDigits: 2 })}
                     </div>
                   </div>
                 </div>

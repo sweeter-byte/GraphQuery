@@ -52,4 +52,5 @@ def base_argparser(desc: str, default_datasets: list[str] | None = None) -> argp
     )
     p.add_argument("--seed", type=int, default=42, help="Random seed")
     p.add_argument("--threads", type=int, default=1, help="Python threads for M2")
+    p.add_argument("--timeout", type=int, default=120, help="Per-query timeout in seconds (0=disabled)")
     return p
