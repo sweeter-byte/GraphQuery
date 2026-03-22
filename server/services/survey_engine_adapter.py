@@ -109,7 +109,7 @@ class SurveyEngineAdapter:
         data_graph_path: str,
         query_graph_path: str,
         *,
-        max_embeddings: int = 100000,
+        max_embeddings: int | None = None,
         time_limit: int = 60,
         filter_type: str | None = None,
         order_type: str | None = None,
@@ -126,8 +126,9 @@ class SurveyEngineAdapter:
             Path to the data graph file (`.graph` format).
         query_graph_path : str
             Path to the query graph file (`.graph` format).
-        max_embeddings : int
-            Maximum number of embeddings to enumerate.
+        max_embeddings : int or None
+            Maximum number of embeddings to enumerate. When None (default),
+            no limit is imposed (Survey uses "MAX" = unlimited).
         time_limit : int
             Time limit in seconds for the enumeration phase.
         filter_type : str or None
@@ -176,9 +177,10 @@ class SurveyEngineAdapter:
             "-filter", ft,
             "-order", ot,
             "-engine", et,
-            "-num", str(max_embeddings),
             "-time_limit", str(time_limit),
         ]
+        if max_embeddings is not None:
+            cmd.extend(["-num", str(max_embeddings)])
         if order_file_path is not None:
             cmd.extend(["-order_file", order_file_path])
 
