@@ -90,6 +90,88 @@ SIGMOD 2024 额外 4 个 edge-labeled 数据集（Wordnet18, FreeBase15k, Teleco
 
 ---
 
+## M3 运行时间开销分析
+
+### 为什么 M3 是瓶颈？
+
+M3 执行的是**真实的回溯搜索枚举**，是整个流水线中计算量最大的阶段：
+
+| 阶段 | 做什么 | 单次耗时 |
+|------|--------|---------|
+| M1 (filter+order) | 过滤候选顶点 + 生成匹配序列，`-num 1` 跳过枚举 | ~0.01-1 秒 |
+| M2 (模型预测) | 从候选序列中选 winner | ~毫秒级 |
+| **M3 (枚举)** | **实际回溯搜索所有子图匹配** | **0.1 秒 ~ 60+ 秒** |
+
+### 规模估算
+
+假设 M1 去重后有 N 个唯一序列，需要用多个 engine 跑（训练数据收集阶段）：
+
+| 数据集 | 查询图数 | 估计唯一序列 | × 5 engine | 按 60s 超时上限（最坏） |
+|--------|---------|------------|-----------|----------------------|
+| yeast (小) | ~1800 | ~5,000-20,000 | 25,000-100,000 次 | ~70 天单核 |
+| 大数据集 | 更多 | 更多 | 更多 | 更久 |
+
+**结论：单机串行不现实，需要超算/集群并行。**
+
+### C++ 二进制运行环境
+
+M3 核心是 C++ 编译的 `SubgraphMatching.out`，编译选项：
+```
+C++14, -O3 -mavx2 -pthread
+```
+
+**动态链接依赖**（4 个 `.so` 文件）：
+```
+build/graph/libgraph.so
+build/utility/libutility.so
+build/utility/nucleus_decomposition/libnd.so
+build/utility/execution_tree/libet.so
+```
+
+**单次调用接口**：
+```bash
+SubgraphMatching.out \
+  -d <data_graph_path> \
+  -q <query_graph_path> \
+  -filter <filter_type> \
+  -order <order_type> \
+  -engine <engine_type> \
+  -time_limit <seconds> \
+  [-num <max_embeddings>] \
+  [-order_file <custom_order_file>]
+```
+
+### 超时与输出控制
+
+存在**两级超时**机制：
+1. **C++ 层**：`-time_limit 60`（默认 60 秒），超时后枚举函数返回部分结果
+2. **Python 层**：`SIGALRM` 信号（默认 120 秒），包裹整个子进程调用
+
+**输出上限**：`-num <count>` 控制最大嵌入数，默认 `MAX`（无限制），训练数据收集时建议设为 100,000 以控制单次时间。
+
+### 超算部署方案
+
+**可行性**：M3 每次运行完全独立（不同序列 × 不同 engine），天然适合 embarrassingly parallel。
+
+**部署目录结构**：
+```
+hpc_workspace/
+├── bin/SubgraphMatching.out    # C++ 二进制（建议在超算上重新编译）
+├── lib/                        # 4 个 .so 文件
+├── dataset/                    # 数据图 + 查询图（yeast 仅 7.4MB）
+├── tasks/                      # 任务列表 CSV（每行: data_graph, query_graph, filter, order, engine, sequence_file）
+├── results/                    # 输出目录
+└── submit.sh                   # SLURM array job 脚本
+```
+
+**注意事项**：
+- 建议在超算上从源码重新编译，避免 glibc 版本和 AVX2 指令集兼容性问题
+- 用 SLURM array job 分发任务，每个 task 跑一批序列
+- 设置 `LD_LIBRARY_PATH` 指向 `lib/` 目录
+- 结果文件按 `dataset/query_id/filter_order_engine.csv` 组织，便于后续合并
+
+---
+
 ## 阶段二：实验数据收集
 
 | 步骤 | 内容 | 前置依赖 | 状态 |
@@ -100,9 +182,13 @@ SIGMOD 2024 额外 4 个 edge-labeled 数据集（Wordnet18, FreeBase15k, Teleco
 
 ### 并行化设计
 
-M1 阶段的 filter-order 组合执行可以并行化：
-- 多进程/多线程同时运行多个 Survey 子进程
-- 需要控制并发度，避免 CPU/内存过载
+**M1 阶段**（本地即可）：filter-order 组合执行可多进程并行，单次耗时短。
+
+**M3 阶段**（建议超算）：
+- 每次运行完全独立，适合 SLURM array job 大规模并行
+- 将所有 (dataset, query_id, sequence, engine) 组合写入任务列表 CSV
+- 每个 SLURM task 处理一批任务，设置 `-time_limit 60 -num 100000`
+- 结果收集后合并为阶段三所需的训练数据格式
 
 ---
 
