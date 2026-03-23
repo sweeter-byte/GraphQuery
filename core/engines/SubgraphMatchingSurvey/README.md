@@ -58,8 +58,8 @@ After compiling the source code, you can find the binary file `SubgraphMatching.
 Execute the binary with the following command.
 
 ```zsh
-./SubgraphMatching.out -d data_graphs -q query_graphs
--filter method_of_filtering_candidate_vertices -order method_of_ordering_query_vertices -engine method_of_enumerating_partial_results -num number_of_embeddings,
+./SubgraphMatching.out -d data_graphs -q query_graphs \
+-filter method_of_filtering_candidate_vertices -order method_of_ordering_query_vertices -engine method_of_enumerating_partial_results \ -num number_of_embeddings,
 ```
 
 For detailed parameter settings, see `matching/matchingcommand.h`.

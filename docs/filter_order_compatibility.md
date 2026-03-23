@@ -36,3 +36,4 @@
 - 兼容性是算法级属性，与数据集无关，无需在其他数据集上重复测试
 - CECI filter 失败的原因是 CECI 的 filter 阶段产生的候选集格式（column-based）与其他 order 算法不兼容
 - CECI order 失败的原因是它依赖 CECI filter 产生的特定数据结构
+- CECI 组合只能使用CEDI的engine

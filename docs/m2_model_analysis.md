@@ -146,21 +146,3 @@ tracker.score = model.predict([features])[0]  # rank score，越大越好
 3. **分组 vs 单一模型**：推荐单一模型 + `query_vertices` 作为特征，而非按 query size 训练多个模型。
 
 ---
-
-## 4. 实施优先级
-
-```
-V1: LightGBM + 聚合特征 (方案B)
-    → 快速验证 ML 能否超过手工加权
-    → 预计开发 1-2 天
-
-V2: LightGBM + 混合特征 (方案D) + 候选集/拓扑特征
-    → 主力模型，预期 Top-1 Accuracy 显著提升
-    → 预计开发 2-3 天
-
-V3: Top-3 窗口后处理
-    → 仅在 V2 的 Top-1 < 目标但 Top-3 > 90% 时实施
-
-V4: 小型 MLP / 序列模型
-    → 仅在 V2 触顶且有性能余量时探索
-```

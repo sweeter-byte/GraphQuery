@@ -21,7 +21,8 @@ GENERATOR="$PROJECT_ROOT/tools/query_graph_generator.py"
 DATASET_DIR="$PROJECT_ROOT/dataset"
 
 # ---- 可调参数 ----
-SIZES="${SIZES:-4 8 10 12 14 16 20 24 32}"
+# 18 * 2 * 200 = 7200 * 8 = 57600
+SIZES="${SIZES:-2 3 4 5 6 7 8 9 10 11 12 13 14 16 20 24 28 32}" # 删除了16 20 24 32
 MODES="${MODES:-dense sparse}"
 COUNT="${COUNT:-200}"
 SEED="${SEED:-42}"
@@ -46,7 +47,7 @@ for data_graph in "$DATASET_DIR"/*/; do
         continue
     fi
 
-    output_dir="$data_graph/query_graph"
+    output_dir="$data_graph/gen_query_graph"
     mkdir -p "$output_dir"
 
     echo ""
