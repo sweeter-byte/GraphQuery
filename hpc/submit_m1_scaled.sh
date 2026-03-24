@@ -3,7 +3,6 @@
 # 按数据集规模分配不同数量的 SLURM 作业，实现大图数据集的充分并行化。
 #
 # 每个数据集的查询任务按 (size, mode) 组合分片，分配到指定数量的节点上。
-# 大数据集（patents, youtube, eu2005, wordnet）使用更多节点和更长的时间限制。
 #
 # 用法:
 #   bash hpc/submit_m1_scaled.sh              # 提交全部数据集
