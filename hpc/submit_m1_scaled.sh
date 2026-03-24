@@ -34,7 +34,7 @@ for size in "${SIZES[@]}"; do
         ALL_PATTERNS+=("${mode}_${size}")
     done
 done
-TOTAL_PATTERNS=${#ALL_PATTERNS[@]}  # 18 patterns
+TOTAL_PATTERNS=${#ALL_PATTERNS[@]}  # 36 patterns
 
 # ---- 每个数据集的节点(作业)数配置 ----
 # 格式: dataset:num_jobs
@@ -137,15 +137,15 @@ submit_batch_job() {
 set -uo pipefail
 
 PROJECT_ROOT="$PROJECT_ROOT"
-PYTHON="\${PYTHON:-\$PROJECT_ROOT/sc-graphquery-env/bin/python3}"
-if [ ! -f "\$PYTHON" ]; then
-    PYTHON="python3"
-fi
+
+PYTHON="python3"
+
 
 SURVEY_BUILD="\$PROJECT_ROOT/core/engines/SubgraphMatchingSurvey/vlabel/build"
 export LD_LIBRARY_PATH="\${SURVEY_BUILD}/graph:\${SURVEY_BUILD}/utility:\${SURVEY_BUILD}/utility/nucleus_decomposition:\${SURVEY_BUILD}/utility/execution_tree:\${LD_LIBRARY_PATH:-}"
 
-module load singularity 2>/dev/null || true
+module load gcc/9.3.0 2>/dev/null || true
+module load python/3.8.3 2>/dev/null || true
 
 PATTERNS=($patterns_str)
 for pattern in "\${PATTERNS[@]}"; do
