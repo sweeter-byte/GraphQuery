@@ -24,23 +24,17 @@
 
 set -euo pipefail
 
-# ---- 项目路径 (根据你的超算工作目录修改) ----
-PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# ---- 项目路径----
+PROJECT_ROOT="/fs0/home/hpc70207290/ranmaoyin2025/GraphQuery"
 
 # ---- 可调参数 ----
 WORKERS="${WORKERS:-16}"
-TIME_LIMIT="${TIME_LIMIT:-120}"
+TIME_LIMIT="${TIME_LIMIT:-180}"
 DATASETS="${DATASETS:-}"
 QUERY_PATTERN="${QUERY_PATTERN:-}"
 OUTPUT_DIR="${OUTPUT_DIR:-$PROJECT_ROOT/results}"
 
-# ---- conda 虚拟环境路径 (根据你的实际路径修改) ----
-PYTHON="${PYTHON:-$PROJECT_ROOT/sc-graphquery-env/bin/python3}"
-
-# ---- 如果没有指定 PYTHON, 尝试系统 python3 ----
-if [ ! -f "$PYTHON" ]; then
-    PYTHON="python3"
-fi
+PYTHON="python3"
 
 # ---- 设置 LD_LIBRARY_PATH ----
 SURVEY_BUILD="$PROJECT_ROOT/core/engines/SubgraphMatchingSurvey/vlabel/build"
@@ -96,10 +90,13 @@ echo "  Output       : $OUTPUT_FILE"
 echo "============================================"
 
 # ---- 加载 singularity 并执行 ----
-module load singularity 2>/dev/null || true
+# module load singularity 2>/dev/null || true
 
 # 如果需要通过 singularity 运行 (glibc 兼容性)，取消注释下面一行并注释掉直接执行:
-singularity exec --env LD_LIBRARY_PATH="$LD_LIBRARY_PATH" ~/software/wzk-ubuntu2204-dev.sif $CMD
+# singularity exec --env LD_LIBRARY_PATH="$LD_LIBRARY_PATH" ~/software/wzk-ubuntu2204-dev.sif $CMD
+
+module load gcc/9.3.0 2>/dev/null || true
+module load python/3.8.3 2>/dev/null || true
 
 # 直接执行 (如果环境兼容):
 echo "Running: $CMD"

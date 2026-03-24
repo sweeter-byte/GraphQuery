@@ -12,9 +12,9 @@
 
 set -euo pipefail
 
-PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+PROJECT_ROOT="/fs0/home/hpc70207290/ranmaoyin2025/GraphQuery"
 DATASET="${1:-}"
-TIME_LIMIT="${TIME_LIMIT:-120}"
+TIME_LIMIT="${TIME_LIMIT:-180}"
 
 # 查询图的所有 size
 SIZES="2 3 4 5 6 7 8 9 10 11 12 13 14 16 20 24 28 32"
