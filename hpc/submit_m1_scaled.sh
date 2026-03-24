@@ -12,7 +12,6 @@
 #
 # 环境变量覆盖:
 #   TIME_LIMIT=180 bash hpc/submit_m1_scaled.sh   # 覆盖每查询超时 (秒)
-#   SLURM_TIME="03:00:00" bash hpc/submit_m1_scaled.sh  # 覆盖 SLURM wall time
 #   DRY_RUN=1 bash hpc/submit_m1_scaled.sh        # 只打印命令不提交
 #
 
@@ -22,7 +21,6 @@ PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
 # ---- 可调参数 ----
 TIME_LIMIT="${TIME_LIMIT:-120}"
-SLURM_TIME="${SLURM_TIME:-02:00:00}"
 DRY_RUN="${DRY_RUN:-0}"
 
 # ---- 查询图的所有 (size, mode) 组合 ----
@@ -106,7 +104,6 @@ submit_one_job() {
     local job_name="m1_${dataset}_${pattern}"
     local cmd="DATASETS=\"$dataset\" QUERY_PATTERN=\"$pattern\" TIME_LIMIT=\"$TIME_LIMIT\" \
 sbatch --job-name=\"$job_name\" \
-       --time=\"$SLURM_TIME\" \
        --output=\"${log_dir}/${pattern}_%J.out\" \
        --error=\"${log_dir}/${pattern}_%J.err\" \
        \"$PROJECT_ROOT/hpc/submit_experiment.sh\""
@@ -134,7 +131,6 @@ submit_batch_job() {
 #SBATCH -p cpu
 #SBATCH -n 1
 #SBATCH --cpus-per-task=16
-#SBATCH --time=${SLURM_TIME}
 #SBATCH --output=${log_dir}/batch${job_idx}_%J.out
 #SBATCH --error=${log_dir}/batch${job_idx}_%J.err
 
@@ -246,7 +242,6 @@ if [ "${1:-}" = "--rerun-failed" ]; then
             TIME_LIMIT="$TIME_LIMIT" \
             OUTPUT_DIR="$RESULTS_DIR" \
                 sbatch --job-name="m1_rerun_${dataset}_${pattern}" \
-                       --time="$SLURM_TIME" \
                        --output="$RESULTS_DIR/logs/rerun/${dataset}_${pattern}_%J.out" \
                        --error="$RESULTS_DIR/logs/rerun/${dataset}_${pattern}_%J.err" \
                        "$PROJECT_ROOT/hpc/submit_experiment.sh"
@@ -263,7 +258,6 @@ echo "============================================"
 echo " GraphQuery M1 Scaled Submission"
 echo "============================================"
 echo "  Per-query timeout : ${TIME_LIMIT}s"
-echo "  SLURM wall time   : ${SLURM_TIME}"
 echo "  Patterns per dataset: ${TOTAL_PATTERNS}"
 echo "  Dry run            : ${DRY_RUN}"
 echo ""
