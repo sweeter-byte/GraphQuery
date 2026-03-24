@@ -3,6 +3,7 @@
 #SBATCH -p cpu
 #SBATCH -n 1
 #SBATCH --cpus-per-task=16
+#SBATCH --time=02:00:00
 #SBATCH --error=%J.err
 #SBATCH --output=%J.out
 #
@@ -29,7 +30,7 @@ PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
 # ---- 可调参数 ----
 WORKERS="${WORKERS:-16}"
-TIME_LIMIT="${TIME_LIMIT:-30}"
+TIME_LIMIT="${TIME_LIMIT:-120}"
 DATASETS="${DATASETS:-}"
 QUERY_PATTERN="${QUERY_PATTERN:-}"
 OUTPUT_DIR="${OUTPUT_DIR:-$PROJECT_ROOT/results}"

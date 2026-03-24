@@ -14,10 +14,14 @@ set -euo pipefail
 
 PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 DATASET="${1:-}"
+TIME_LIMIT="${TIME_LIMIT:-120}"
+SLURM_TIME="${SLURM_TIME:-02:00:00}"
 
 # 查询图的所有 size
 SIZES="2 3 4 5 6 7 8 9 10 11 12 13 14 16 20 24 28 32"
 MODES="dense sparse"
+
+mkdir -p "$PROJECT_ROOT/results/logs"
 
 for size in $SIZES; do
     for mode in $MODES; do
@@ -26,8 +30,10 @@ for size in $SIZES; do
 
         DATASETS="$DATASET" \
         QUERY_PATTERN="$pattern" \
+        TIME_LIMIT="$TIME_LIMIT" \
         OUTPUT_DIR="$PROJECT_ROOT/results" \
             sbatch --job-name="gq_${pattern}" \
+                   --time="$SLURM_TIME" \
                    --output="$PROJECT_ROOT/results/logs/${pattern}_%J.out" \
                    --error="$PROJECT_ROOT/results/logs/${pattern}_%J.err" \
                    "$PROJECT_ROOT/hpc/submit_experiment.sh"
