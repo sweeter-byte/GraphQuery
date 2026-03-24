@@ -1,5 +1,5 @@
 #!/usr/bin/bash
-#SBATCH -J graphquery
+#SBATCH -J simulate
 #SBATCH -p cpu
 #SBATCH -n 1
 #SBATCH --cpus-per-task=16
@@ -99,7 +99,7 @@ echo "============================================"
 module load singularity 2>/dev/null || true
 
 # 如果需要通过 singularity 运行 (glibc 兼容性)，取消注释下面一行并注释掉直接执行:
-# singularity exec --env LD_LIBRARY_PATH="$LD_LIBRARY_PATH" ~/software/wzk-ubuntu2204-dev.sif $CMD
+singularity exec --env LD_LIBRARY_PATH="$LD_LIBRARY_PATH" ~/software/wzk-ubuntu2204-dev.sif $CMD
 
 # 直接执行 (如果环境兼容):
 echo "Running: $CMD"
