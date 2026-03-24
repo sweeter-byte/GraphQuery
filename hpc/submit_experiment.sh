@@ -29,7 +29,7 @@ PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
 # ---- 可调参数 ----
 WORKERS="${WORKERS:-16}"
-TIME_LIMIT="${TIME_LIMIT:-30}"
+TIME_LIMIT="${TIME_LIMIT:-120}"
 DATASETS="${DATASETS:-}"
 QUERY_PATTERN="${QUERY_PATTERN:-}"
 OUTPUT_DIR="${OUTPUT_DIR:-$PROJECT_ROOT/results}"
